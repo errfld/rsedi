@@ -143,13 +143,21 @@ impl<'a> SegmentParser<'a> {
         loop {
             let (value, delimiter) = self.buffer.read_until_delimiter();
 
-            // Handle empty elements - when we get an empty value with element separator,
-            // it represents an empty element that should be preserved
+            // Handle empty values - when we get an empty value with a delimiter,
+            // we need to determine if it's an empty element or empty component
             if value.is_empty() && components.is_empty() {
                 if let Some(d) = delimiter {
                     if d == self.buffer.separators.element {
-                        // Empty element - add it and continue
+                        // Empty element followed by element separator
                         elements.push(Element::Simple(Vec::new()));
+                        continue;
+                    } else if d == self.buffer.separators.component {
+                        // Empty element followed by component separator
+                        // This means we have an empty simple element, then a composite starts
+                        // Add the empty simple element first
+                        elements.push(Element::Simple(Vec::new()));
+                        // Now start the composite with an empty first component
+                        components.push(Vec::new());
                         continue;
                     } else if d == self.buffer.separators.segment {
                         // Empty segment or trailing empty element
@@ -529,6 +537,153 @@ UNT+5+1'";
         match &segment.elements[3] {
             Element::Simple(val) => assert!(val.is_empty(), "Expected empty trailing element"),
             _ => panic!("Expected simple element"),
+        }
+    }
+
+    #[test]
+    fn test_composite_with_empty_middle_component() {
+        // Test NAD+BY+1234567890123::9' - empty middle component in composite
+        // Structure: NAD+BY+1234567890123::9'
+        // - Tag: NAD
+        // - Element 0: BY (simple)
+        // - Element 1: 1234567890123::9 (composite with 3 components)
+        let data = b"NAD+BY+1234567890123::9'";
+        let mut parser = SegmentParser::new(data, "test");
+
+        let segment = parser.next_segment().unwrap().unwrap();
+        assert_eq!(segment.tag, "NAD");
+        assert_eq!(segment.elements.len(), 2);
+
+        // First element should be BY
+        match &segment.elements[0] {
+            Element::Simple(val) => assert_eq!(String::from_utf8_lossy(val), "BY"),
+            _ => panic!("Expected simple element at position 0"),
+        }
+
+        // Second element should be composite with 3 components
+        match &segment.elements[1] {
+            Element::Composite(comps) => {
+                assert_eq!(
+                    comps.len(),
+                    3,
+                    "Should have 3 components: [1234567890123, '', 9]"
+                );
+                assert_eq!(String::from_utf8_lossy(&comps[0]), "1234567890123");
+                assert_eq!(String::from_utf8_lossy(&comps[1]), "");
+                assert_eq!(String::from_utf8_lossy(&comps[2]), "9");
+            }
+            _ => panic!(
+                "Expected composite element at position 1, got {:?}",
+                segment.elements[1]
+            ),
+        }
+    }
+
+    #[test]
+    fn test_composite_with_empty_trailing_component() {
+        // Test TST+ABC+XYZ:' - trailing empty component in composite
+        // Structure: TST+ABC+XYZ:'
+        // - Tag: TST
+        // - Element 0: ABC (simple)
+        // - Element 1: XYZ: (composite with trailing empty - 2 components)
+        let data = b"TST+ABC+XYZ:'";
+        let mut parser = SegmentParser::new(data, "test");
+
+        let segment = parser.next_segment().unwrap().unwrap();
+        assert_eq!(segment.tag, "TST");
+        assert_eq!(segment.elements.len(), 2);
+
+        // First element should be ABC
+        match &segment.elements[0] {
+            Element::Simple(val) => assert_eq!(String::from_utf8_lossy(val), "ABC"),
+            _ => panic!("Expected simple element at position 0"),
+        }
+
+        // Second element should be composite with 2 components: XYZ and empty
+        match &segment.elements[1] {
+            Element::Composite(comps) => {
+                assert_eq!(comps.len(), 2, "Should have 2 components: [XYZ, '']");
+                assert_eq!(String::from_utf8_lossy(&comps[0]), "XYZ");
+                assert_eq!(String::from_utf8_lossy(&comps[1]), "");
+            }
+            _ => panic!("Expected composite element at position 1"),
+        }
+    }
+
+    #[test]
+    fn test_composite_with_multiple_empty_components() {
+        // Test TST+::XYZ' - leading empty components
+        // Structure: TST+::XYZ'
+        // - Tag: TST
+        // - Element 0: (empty simple)
+        // - Element 1: ::XYZ (composite with 3 components: '', '', XYZ)
+        let data = b"TST+::XYZ'";
+        let mut parser = SegmentParser::new(data, "test");
+
+        let segment = parser.next_segment().unwrap().unwrap();
+        assert_eq!(segment.tag, "TST");
+        assert_eq!(segment.elements.len(), 2);
+
+        // First element should be empty simple
+        match &segment.elements[0] {
+            Element::Simple(val) => assert!(
+                val.is_empty(),
+                "Expected empty simple element at position 0"
+            ),
+            _ => panic!(
+                "Expected simple element at position 0, got {:?}",
+                segment.elements[0]
+            ),
+        }
+
+        // Second element should be composite with 3 components
+        match &segment.elements[1] {
+            Element::Composite(comps) => {
+                assert_eq!(comps.len(), 3, "Should have 3 components: ['', '', XYZ]");
+                assert_eq!(String::from_utf8_lossy(&comps[0]), "");
+                assert_eq!(String::from_utf8_lossy(&comps[1]), "");
+                assert_eq!(String::from_utf8_lossy(&comps[2]), "XYZ");
+            }
+            _ => panic!("Expected composite element at position 1"),
+        }
+    }
+
+    #[test]
+    fn test_composite_all_empty_components() {
+        // Test TST+:::' - all empty components
+        // Structure: TST+:::'
+        // - Tag: TST
+        // - Element 0: (empty simple)
+        // - Element 1: ::: (composite with 4 components, all empty)
+        let data = b"TST+:::'";
+        let mut parser = SegmentParser::new(data, "test");
+
+        let segment = parser.next_segment().unwrap().unwrap();
+        assert_eq!(segment.tag, "TST");
+        assert_eq!(segment.elements.len(), 2);
+
+        // First element should be empty simple
+        match &segment.elements[0] {
+            Element::Simple(val) => assert!(
+                val.is_empty(),
+                "Expected empty simple element at position 0"
+            ),
+            _ => panic!(
+                "Expected simple element at position 0, got {:?}",
+                segment.elements[0]
+            ),
+        }
+
+        // Second element should be composite with 4 components (all empty)
+        match &segment.elements[1] {
+            Element::Composite(comps) => {
+                assert_eq!(comps.len(), 4, "Should have 4 empty components");
+                assert!(comps[0].is_empty());
+                assert!(comps[1].is_empty());
+                assert!(comps[2].is_empty());
+                assert!(comps[3].is_empty());
+            }
+            _ => panic!("Expected composite element at position 1"),
         }
     }
 }
