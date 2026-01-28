@@ -1,0 +1,19 @@
+[package]
+name = "edi-adapter-db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Database adapter for reading and writing EDI data"
+
+[dependencies]
+edi-ir = { workspace = true }
+edi-schema = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+anyhow = { workspace = true }

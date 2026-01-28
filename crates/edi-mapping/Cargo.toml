@@ -1,0 +1,19 @@
+[package]
+name = "edi-mapping"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "DSL parser/runtime, transforms, and extension API for EDI mappings"
+
+[dependencies]
+edi-ir = { workspace = true }
+edi-schema = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+anyhow = { workspace = true }

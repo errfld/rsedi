@@ -1,0 +1,17 @@
+[package]
+name = "edi-adapter-edifact"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EDIFACT/EANCOM parser/serializer and envelope handling"
+
+[dependencies]
+edi-ir = { workspace = true }
+edi-schema = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+anyhow = { workspace = true }

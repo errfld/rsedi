@@ -1,0 +1,67 @@
+[workspace]
+members = [
+    "crates/edi-ir",
+    "crates/edi-schema",
+    "crates/edi-validation",
+    "crates/edi-mapping",
+    "crates/edi-adapter-edifact",
+    "crates/edi-adapter-csv",
+    "crates/edi-adapter-db",
+    "crates/edi-pipeline",
+    "crates/edi-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["EDI Integration Engine Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/edi-engine"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# CSV
+csv = "1.3"
+
+# Database (optional, add when implementing)
+# sqlx = { version = "0.7", features = ["runtime-tokio", "postgres"] }
+
+# Parser combinators (choose one)
+# winnow = "0.5"
+# nom = "7.1"
+
+# Concurrent collections
+dashmap = "5.5"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Internal crates
+edi-ir = { path = "crates/edi-ir" }
+edi-schema = { path = "crates/edi-schema" }
+edi-validation = { path = "crates/edi-validation" }
+edi-mapping = { path = "crates/edi-mapping" }
+edi-adapter-edifact = { path = "crates/edi-adapter-edifact" }
+edi-adapter-csv = { path = "crates/edi-adapter-csv" }
+edi-adapter-db = { path = "crates/edi-adapter-db" }
+edi-pipeline = { path = "crates/edi-pipeline" }
+edi-cli = { path = "crates/edi-cli" }

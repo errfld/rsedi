@@ -1,0 +1,19 @@
+[package]
+name = "edi-schema"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Schema model, loader, and inheritance/merge logic for EDI"
+
+[dependencies]
+edi-ir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }

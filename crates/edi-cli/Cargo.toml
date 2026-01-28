@@ -1,0 +1,30 @@
+[package]
+name = "edi-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI application and configuration for EDI Integration Engine"
+
+[[bin]]
+name = "edi"
+path = "src/main.rs"
+
+[dependencies]
+edi-ir = { workspace = true }
+edi-schema = { workspace = true }
+edi-validation = { workspace = true }
+edi-mapping = { workspace = true }
+edi-adapter-edifact = { workspace = true }
+edi-adapter-csv = { workspace = true }
+edi-adapter-db = { workspace = true }
+edi-pipeline = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
