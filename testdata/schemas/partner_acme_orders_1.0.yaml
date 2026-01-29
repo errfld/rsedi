@@ -1,0 +1,51 @@
+# Partner ACME ORDERS Schema
+# Partner-specific customization extending EANCOM D96A ORDERS
+
+name: "partner_acme_orders"
+version: "1.0"
+parent:
+  name: "EANCOM_ORDERS"
+  version: "D96A"
+
+segments:
+  # Override: Make CUX mandatory for ACME
+  - tag: CUX
+    is_mandatory: true
+    max_repetitions: 1
+    elements:
+      - id: "e1"
+        name: "currency_details"
+        data_type: "an"
+        is_mandatory: true
+        min_length: 1
+        max_length: 35
+
+  # Override: Make RFF mandatory
+  - tag: RFF
+    is_mandatory: true
+    max_repetitions: 3
+    elements:
+      - id: "e1"
+        name: "reference"
+        data_type: "an"
+        is_mandatory: true
+        min_length: 1
+        max_length: 70
+
+  # Override: Require specific NAD parties
+  - tag: NAD
+    is_mandatory: true
+    max_repetitions: 5
+    elements:
+      - id: "e1"
+        name: "party_qualifier"
+        data_type: "an"
+        is_mandatory: true
+        min_length: 1
+        max_length: 3
+      - id: "e2"
+        name: "party_identification"
+        data_type: "an"
+        is_mandatory: true
+        min_length: 13
+        max_length: 13

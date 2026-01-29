@@ -55,6 +55,9 @@ dashmap = "5.5"
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Regex for pattern validation
+regex = "1.10"
+
 # Internal crates
 edi-ir = { path = "crates/edi-ir" }
 edi-schema = { path = "crates/edi-schema" }

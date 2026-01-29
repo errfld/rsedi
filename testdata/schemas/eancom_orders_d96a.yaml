@@ -1,0 +1,229 @@
+# EANCOM D96A ORDERS Schema
+# Baseline schema for Purchase Order messages
+
+name: "EANCOM_ORDERS"
+version: "D96A"
+parent: null
+
+segments:
+  # Beginning of Message
+  - tag: BGM
+    is_mandatory: true
+    max_repetitions: 1
+    elements:
+      - id: "e1"
+        name: "document_name"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+      - id: "e2"
+        name: "document_number"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+      - id: "e3"
+        name: "message_function"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 3
+
+  # Date/Time/Period
+  - tag: DTM
+    is_mandatory: true
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "date_time_period"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Reference
+  - tag: RFF
+    is_mandatory: false
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "reference"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 70
+
+  # Name and Address
+  - tag: NAD
+    is_mandatory: true
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "party_qualifier"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 3
+      - id: "e2"
+        name: "party_identification"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Line Item
+  - tag: LIN
+    is_mandatory: false
+    max_repetitions: 9999
+    elements:
+      - id: "e1"
+        name: "line_item_number"
+        data_type: "n"
+        is_mandatory: false
+        min_length: 0
+        max_length: 6
+      - id: "e2"
+        name: "action_request"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 3
+      - id: "e3"
+        name: "item_number"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Item Description
+  - tag: IMD
+    is_mandatory: false
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "description_format"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 3
+      - id: "e2"
+        name: "description_characteristic"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 3
+      - id: "e3"
+        name: "description"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 256
+
+  # Quantity
+  - tag: QTY
+    is_mandatory: false
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "quantity"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Price Details
+  - tag: PRI
+    is_mandatory: false
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "price"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Monetary Amount
+  - tag: MOA
+    is_mandatory: false
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "monetary_amount"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Currency
+  - tag: CUX
+    is_mandatory: false
+    max_repetitions: 5
+    elements:
+      - id: "e1"
+        name: "currency_details"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Section Control
+  - tag: UNS
+    is_mandatory: false
+    max_repetitions: 1
+    elements:
+      - id: "e1"
+        name: "section_identification"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 3
+
+  # Control Total
+  - tag: CNT
+    is_mandatory: false
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "control_value"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Message Header
+  - tag: UNH
+    is_mandatory: true
+    max_repetitions: 1
+    elements:
+      - id: "e1"
+        name: "message_reference"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 14
+      - id: "e2"
+        name: "message_identifier"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
+  # Message Trailer
+  - tag: UNT
+    is_mandatory: true
+    max_repetitions: 1
+    elements:
+      - id: "e1"
+        name: "segment_count"
+        data_type: "n"
+        is_mandatory: false
+        min_length: 0
+        max_length: 10
+      - id: "e2"
+        name: "message_reference"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 14

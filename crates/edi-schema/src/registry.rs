@@ -132,6 +132,7 @@ mod tests {
             name: name.to_string(),
             version: "1.0".to_string(),
             segments: vec![],
+            inheritance: Default::default(),
         }
     }
 
