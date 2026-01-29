@@ -321,7 +321,7 @@ fn test_conditional_rules_integration() {
 
 #[test]
 fn test_strictness_levels_integration() {
-    let node_with_null = Node::with_value("FIELD", NodeType::Element, Value::Null);
+    let _node_with_null = Node::with_value("FIELD", NodeType::Element, Value::Null);
     let doc = Document::new(Node::new("ROOT", NodeType::Root));
 
     // Strict mode
@@ -392,6 +392,8 @@ fn test_end_to_end_validation_workflow() {
         strictness: StrictnessLevel::Moderate,
         continue_on_error: true,
         max_errors: 10,
+        validate_codelists: true,
+        validate_conditionals: true,
     });
 
     // 3. Validate document
@@ -489,6 +491,8 @@ fn test_complex_validation_scenario() {
         strictness: StrictnessLevel::Strict,
         continue_on_error: true,
         max_errors: 0,
+        validate_codelists: true,
+        validate_conditionals: true,
     });
 
     let result = engine.validate(&doc).unwrap();
@@ -496,6 +500,6 @@ fn test_complex_validation_scenario() {
     // Should continue after finding the invalid segment
     // and report all issues found
     if result.has_errors() {
-        assert!(result.errors.len() >= 1);
+        assert!(!result.errors.is_empty());
     }
 }

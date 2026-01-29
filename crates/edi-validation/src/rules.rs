@@ -123,44 +123,28 @@ pub fn validate_length(value: &str, constraint: &Constraint) -> RuleResult {
     RuleResult::valid()
 }
 
-/// Validate pattern matching
+/// Validate pattern matching using regex
 pub fn validate_pattern(value: &str, pattern: &str) -> RuleResult {
+    use regex::Regex;
+
     // Empty strings should not match patterns that require at least one character
     if value.is_empty() {
         return RuleResult::invalid(format!("Empty value does not match pattern '{}'", pattern));
     }
 
-    // Simple pattern matching (could use regex in real implementation)
-    if pattern == "^[0-9]+$" {
-        if value.chars().all(|c| c.is_ascii_digit()) {
-            RuleResult::valid()
-        } else {
-            RuleResult::invalid(format!(
-                "Value '{}' does not match pattern '{}'",
-                value, pattern
-            ))
+    // Try to compile the regex pattern
+    match Regex::new(pattern) {
+        Ok(re) => {
+            if re.is_match(value) {
+                RuleResult::valid()
+            } else {
+                RuleResult::invalid(format!(
+                    "Value '{}' does not match pattern '{}'",
+                    value, pattern
+                ))
+            }
         }
-    } else if pattern == "^[A-Z]+$" {
-        if value.chars().all(|c| c.is_ascii_uppercase()) {
-            RuleResult::valid()
-        } else {
-            RuleResult::invalid(format!(
-                "Value '{}' does not match pattern '{}'",
-                value, pattern
-            ))
-        }
-    } else if pattern == "^[a-zA-Z0-9]+$" {
-        if value.chars().all(|c| c.is_ascii_alphanumeric()) {
-            RuleResult::valid()
-        } else {
-            RuleResult::invalid(format!(
-                "Value '{}' does not match pattern '{}'",
-                value, pattern
-            ))
-        }
-    } else {
-        // Unknown pattern, assume valid
-        RuleResult::valid()
+        Err(e) => RuleResult::invalid(format!("Invalid regex pattern '{}': {}", pattern, e)),
     }
 }
 
@@ -334,6 +318,18 @@ pub fn validate_conditional(nodes: &[&Node], rules: &[ConditionalRule]) -> RuleR
     }
 
     RuleResult::valid()
+}
+
+/// Validate a value against a code list
+pub fn validate_code_list(value: &str, codes: &[String]) -> RuleResult {
+    if codes.contains(&value.to_string()) {
+        RuleResult::valid()
+    } else {
+        RuleResult::invalid(format!(
+            "Value '{}' is not in allowed codes: {:?}",
+            value, codes
+        ))
+    }
 }
 
 #[cfg(test)]

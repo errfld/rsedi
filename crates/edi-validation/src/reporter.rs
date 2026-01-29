@@ -212,6 +212,7 @@ impl ValidationReport {
 pub struct ValidationReporter {
     report: ValidationReport,
     /// Format options
+    #[allow(dead_code)]
     format_options: FormatOptions,
 }
 

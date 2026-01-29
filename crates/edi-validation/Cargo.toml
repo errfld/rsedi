@@ -11,6 +11,7 @@ edi-ir = { workspace = true }
 edi-schema = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
