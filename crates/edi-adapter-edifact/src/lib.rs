@@ -5,9 +5,9 @@
 //! This crate provides streaming parsing and serialization of EDIFACT
 //! documents with support for EANCOM variants.
 
+pub mod envelopes;
 pub mod parser;
 pub mod serializer;
-pub mod envelopes;
 pub mod syntax;
 
 pub use parser::EdifactParser;
@@ -24,18 +24,21 @@ pub enum Error {
         column: usize,
         message: String,
     },
-    
+
     #[error("Serialize error: {0}")]
     Serialize(String),
-    
+
     #[error("Envelope error: {0}")]
     Envelope(String),
-    
+
     #[error("Syntax error: {0}")]
     Syntax(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

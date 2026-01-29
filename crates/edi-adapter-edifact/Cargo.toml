@@ -11,7 +11,9 @@ edi-ir = { workspace = true }
 edi-schema = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 anyhow = { workspace = true }
+tempfile = "3"

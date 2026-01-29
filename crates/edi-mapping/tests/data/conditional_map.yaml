@@ -1,0 +1,131 @@
+name: conditional_map
+source_type: EANCOM_ORDERS
+target_type: CSV_ORDERS
+rules:
+  # Check if this is a standard order
+  - type: condition
+    when:
+      op: equals
+      field: /BGM/MessageName
+      value: "220"
+    then:
+      - type: field
+        source: /BGM/DocumentNumber
+        target: order_type
+        transform:
+          op: default
+          value: "Standard Order"
+    else_rules:
+      - type: condition
+        when:
+          op: equals
+          field: /BGM/MessageName
+          value: "221"
+        then:
+          - type: field
+            source: /BGM/DocumentNumber
+            target: order_type
+            transform:
+              op: default
+              value: "Blanket Order"
+      
+      - type: condition
+        when:
+          op: equals
+          field: /BGM/MessageName
+          value: "226"
+        then:
+          - type: field
+            source: /BGM/DocumentNumber
+            target: order_type
+            transform:
+              op: default
+              value: "Call-off Order"
+  
+  # Complex conditional with AND
+  - type: condition
+    when:
+      op: and
+      conditions:
+        - op: exists
+          field: /NAD/PartyName
+        - op: contains
+          field: /NAD/PartyName
+          value: "GmbH"
+    then:
+      - type: field
+        source: /NAD/PartyName
+        target: company_type
+        transform:
+          op: default
+          value: "German Corporation"
+  
+  # Complex conditional with OR
+  - type: condition
+    when:
+      op: or
+      conditions:
+        - op: equals
+          field: /NAD/CountryCode
+          value: "DE"
+        - op: equals
+          field: /NAD/CountryCode
+          value: "AT"
+        - op: equals
+          field: /NAD/CountryCode
+          value: "CH"
+    then:
+      - type: field
+        source: /NAD/CountryCode
+        target: region
+        transform:
+          op: default
+          value: "DACH Region"
+  
+  # Negated condition
+  - type: condition
+    when:
+      op: not
+      condition:
+        op: equals
+        field: /FTX/TextSubject
+        value: "PUR"
+    then:
+      - type: field
+        source: /FTX/Text
+        target: general_text
+  
+  # Nested foreach with condition
+  - type: foreach
+    source: /LIN_Items
+    target: valid_items
+    rules:
+      - type: condition
+        when:
+          op: exists
+          field: ItemNumber
+        then:
+          - type: field
+            source: LineNumber
+            target: line_no
+          
+          - type: field
+            source: ItemNumber
+            target: product_code
+          
+          - type: condition
+            when:
+              op: matches
+              field: ItemNumber
+              pattern: "^[A-Z]{3}[0-9]{3}$"
+            then:
+              - type: field
+                source: ItemNumber
+                target: formatted_sku
+                transform:
+                  op: concatenate
+                  values:
+                    - type: literal
+                      value: "SKU-"
+                    - type: field
+                      path: ItemNumber

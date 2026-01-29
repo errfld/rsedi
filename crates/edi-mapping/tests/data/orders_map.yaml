@@ -1,0 +1,95 @@
+name: orders_to_csv
+source_type: EANCOM_D96A_ORDERS
+target_type: CSV_ORDERS
+rules:
+  # Header fields
+  - type: field
+    source: /UNH/MessageReference
+    target: message_reference
+  
+  - type: field
+    source: /BGM/DocumentNumber
+    target: order_number
+  
+  - type: field
+    source: /BGM/MessageName
+    target: order_type
+  
+  - type: field
+    source: /DTM/Date
+    target: order_date
+    transform:
+      op: date_format
+      from: "YYYYMMDD"
+      to: "YYYY-MM-DD"
+  
+  # Customer info
+  - type: condition
+    when:
+      op: equals
+      field: /NAD/PartyQualifier
+      value: "BY"
+    then:
+      - type: field
+        source: /NAD/PartyName
+        target: customer_name
+        transform:
+          op: chain
+          transforms:
+            - op: trim
+            - op: uppercase
+      
+      - type: field
+        source: /NAD/PartyId
+        target: customer_code
+  
+  # Line items
+  - type: foreach
+    source: /LIN_Items
+    target: line_items
+    rules:
+      - type: field
+        source: LineNumber
+        target: line_number
+      
+      - type: field
+        source: ItemNumber
+        target: sku
+        transform:
+          op: uppercase
+      
+      - type: field
+        source: Quantity
+        target: quantity
+      
+      - type: field
+        source: UnitPrice
+        target: unit_price
+        transform:
+          op: number_format
+          decimals: 2
+          thousands_sep: ","
+      
+      - type: condition
+        when:
+          op: exists
+          field: Description
+        then:
+          - type: field
+            source: Description
+            target: item_description
+            transform:
+              op: default
+              value: "No description"
+
+lookups:
+  country_codes:
+    name: country_codes
+    entries:
+      DE: Germany
+      FR: France
+      US: "United States"
+      GB: "United Kingdom"
+      NL: Netherlands
+      IT: Italy
+      ES: Spain
