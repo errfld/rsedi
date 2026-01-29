@@ -1,0 +1,552 @@
+# CSV ORDERS Target Schema
+# Flat file format for ORDERS data export to CSV
+#
+# Usage: Define output structure for CSV adapter
+# Maps from hierarchical EDI to flat tabular format
+
+schema_version: "1.0"
+schema_type: target
+
+metadata:
+  name: "CSV ORDERS Target"
+  description: "Flat CSV structure for ORDERS message export"
+  format: CSV
+  delimiter: ","
+  quote_char: "\""
+  encoding: UTF-8
+  line_ending: CRLF
+  header_row: true
+
+# Source mapping: Links this target to source EDI schema
+source_schema: eancom_d96a_orders
+
+# CSV file structure
+csv_structure:
+  # File-level settings
+  filename_pattern: "orders_{document_number}_{date}.csv"
+  
+  # Header row configuration
+  headers:
+    style: named  # named, position, or none
+    case: upper   # upper, lower, preserve
+  
+  # Data format settings
+  formats:
+    date: "%Y-%m-%d"
+    datetime: "%Y-%m-%d %H:%M:%S"
+    decimal_separator: "."
+    thousands_separator: ""
+    boolean_true: "YES"
+    boolean_false: "NO"
+    null_value: ""
+  
+  # Quoting rules
+  quoting:
+    always_quote_strings: true
+    quote_numeric: false
+    escape_char: "\""
+
+# Column definitions (flat structure)
+# Maps from hierarchical EDI segments to CSV columns
+columns:
+  # === Document Header Fields ===
+  
+  - name: DOCUMENT_NUMBER
+    type: string
+    max_length: 35
+    source:
+      segment: BGM
+      element: C106.1004
+    description: "Order number from BGM segment"
+    required: true
+  
+  - name: DOCUMENT_TYPE
+    type: string
+    max_length: 3
+    source:
+      segment: BGM
+      element: C002.1001
+    description: "Document type code (220 = Order)"
+    required: true
+    default: "220"
+  
+  - name: DOCUMENT_DATE
+    type: date
+    format: "%Y-%m-%d"
+    source:
+      segment: DTM
+      element: C507.2380
+      qualifier:
+        element: C507.2005
+        value: "137"
+    description: "Order document date (qualifier 137)"
+    required: true
+  
+  - name: DELIVERY_DATE
+    type: date
+    format: "%Y-%m-%d"
+    source:
+      segment: DTM
+      element: C507.2380
+      qualifier:
+        element: C507.2005
+        value: "2"
+    description: "Requested delivery date (qualifier 2)"
+    required: false
+  
+  # === Buyer Information ===
+  
+  - name: BUYER_GLN
+    type: string
+    max_length: 13
+    source:
+      segment: NAD
+      element: C082.3039
+      qualifier:
+        element: "3035"
+        value: "BY"
+    description: "Buyer GLN (Global Location Number)"
+    required: true
+  
+  - name: BUYER_NAME
+    type: string
+    max_length: 175
+    source:
+      segment: NAD
+      element: C080.3036
+      qualifier:
+        element: "3035"
+        value: "BY"
+    description: "Buyer company name"
+    required: false
+  
+  - name: BUYER_CITY
+    type: string
+    max_length: 35
+    source:
+      segment: NAD
+      element: "3164"
+      qualifier:
+        element: "3035"
+        value: "BY"
+    description: "Buyer city"
+    required: false
+  
+  - name: BUYER_COUNTRY
+    type: string
+    max_length: 3
+    source:
+      segment: NAD
+      element: "3207"
+      qualifier:
+        element: "3035"
+        value: "BY"
+    description: "Buyer country code (ISO 3166)"
+    required: false
+  
+  # === Supplier Information ===
+  
+  - name: SUPPLIER_GLN
+    type: string
+    max_length: 13
+    source:
+      segment: NAD
+      element: C082.3039
+      qualifier:
+        element: "3035"
+        value: "SU"
+    description: "Supplier GLN"
+    required: true
+  
+  - name: SUPPLIER_NAME
+    type: string
+    max_length: 175
+    source:
+      segment: NAD
+      element: C080.3036
+      qualifier:
+        element: "3035"
+        value: "SU"
+    description: "Supplier company name"
+    required: false
+  
+  # === Delivery Party Information ===
+  
+  - name: DELIVERY_GLN
+    type: string
+    max_length: 13
+    source:
+      segment: NAD
+      element: C082.3039
+      qualifier:
+        element: "3035"
+        value: "DP"
+    description: "Deliver-to GLN"
+    required: false
+  
+  - name: DELIVERY_NAME
+    type: string
+    max_length: 175
+    source:
+      segment: NAD
+      element: C080.3036
+      qualifier:
+        element: "3035"
+        value: "DP"
+    description: "Delivery location name"
+    required: false
+  
+  # === Currency Information ===
+  
+  - name: CURRENCY
+    type: string
+    max_length: 3
+    source:
+      segment: CUX
+      element: C504.6345
+    description: "Currency code (ISO 4217)"
+    required: false
+    default: "EUR"
+  
+  # === References ===
+  
+  - name: CONTRACT_REFERENCE
+    type: string
+    max_length: 70
+    source:
+      segment: RFF
+      element: C506.1154
+      qualifier:
+        element: C506.1153
+        value: "CT"
+    description: "Contract number"
+    required: false
+  
+  - name: CUSTOMER_ORDER_NUMBER
+    type: string
+    max_length: 70
+    source:
+      segment: RFF
+      element: C506.1154
+      qualifier:
+        element: C506.1153
+        value: "ON"
+    description: "Customer's order number"
+    required: false
+  
+  # === Line Item Fields ===
+  # These repeat for each LIN segment (one row per line item)
+  
+  - name: LINE_NUMBER
+    type: integer
+    source:
+      segment: LIN
+      element: "1082"
+    description: "Line item sequence number"
+    required: true
+  
+  - name: LINE_ACTION
+    type: string
+    max_length: 3
+    source:
+      segment: LIN
+      element: "1229"
+    description: "Action: 1=Add, 2=Delete, 3=Change"
+    required: false
+    default: "1"
+  
+  - name: PRODUCT_GTIN
+    type: string
+    max_length: 14
+    source:
+      segment: LIN
+      element: C212.7140
+      qualifier:
+        element: C212.7143
+        value: "EN"
+    description: "GTIN (Global Trade Item Number)"
+    required: false
+  
+  - name: PRODUCT_SUPPLIER_CODE
+    type: string
+    max_length: 35
+    source:
+      segment: LIN
+      element: C212.7140
+      qualifier:
+        element: C212.7143
+        value: "SA"
+    description: "Supplier's product code"
+    required: false
+  
+  - name: PRODUCT_BUYER_CODE
+    type: string
+    max_length: 35
+    source:
+      segment: LIN
+      element: C212.7140
+      qualifier:
+        element: C212.7143
+        value: "IN"
+    description: "Buyer's product code"
+    required: false
+  
+  - name: PRODUCT_DESCRIPTION
+    type: string
+    max_length: 256
+    source:
+      segment: IMD
+      element: C273.7008
+      qualifier:
+        element: "7077"
+        value: "A"
+    description: "Product description"
+    required: false
+  
+  - name: ORDERED_QUANTITY
+    type: decimal
+    precision: 3
+    source:
+      segment: QTY
+      element: C186.6060
+      qualifier:
+        element: C186.6063
+        value: "21"
+    description: "Ordered quantity"
+    required: true
+  
+  - name: QUANTITY_UNIT
+    type: string
+    max_length: 3
+    source:
+      segment: QTY
+      element: C186.6411
+      qualifier:
+        element: C186.6063
+        value: "21"
+    description: "Unit of measure (PCE, KGM, LTR)"
+    required: true
+  
+  - name: LINE_DELIVERY_DATE
+    type: date
+    format: "%Y-%m-%d"
+    source:
+      segment: DTM
+      element: C507.2380
+      qualifier:
+        element: C507.2005
+        value: "2"
+      scope: line  # Within current LIN group
+    description: "Line-level delivery date"
+    required: false
+  
+  - name: UNIT_PRICE
+    type: decimal
+    precision: 4
+    source:
+      segment: PRI
+      element: C509.5118
+      qualifier:
+        element: C509.5125
+        value: "AAA"
+    description: "Unit price (net)"
+    required: false
+  
+  - name: PRICE_CURRENCY
+    type: string
+    max_length: 3
+    source:
+      segment: PRI
+      element: C509.6345
+      fallback:
+        segment: CUX
+        element: C504.6345
+    description: "Price currency"
+    required: false
+  
+  - name: LINE_AMOUNT
+    type: decimal
+    precision: 2
+    source:
+      segment: MOA
+      element: C516.5004
+      qualifier:
+        element: C516.5025
+        value: "203"
+    description: "Line item total amount"
+    required: false
+  
+  - name: PACKAGING_TYPE
+    type: string
+    max_length: 35
+    source:
+      segment: PAC
+      element: C202.7065
+    description: "Type of packaging"
+    required: false
+  
+  - name: NUMBER_OF_PACKAGES
+    type: integer
+    source:
+      segment: PAC
+      element: "7224"
+    description: "Number of packages"
+    required: false
+  
+  - name: TAX_RATE
+    type: decimal
+    precision: 3
+    source:
+      segment: TAX
+      element: C243.5278
+      qualifier:
+        element: "5283"
+        value: "7"
+    description: "VAT/Tax rate percentage"
+    required: false
+  
+  - name: TAX_TYPE
+    type: string
+    max_length: 3
+    source:
+      segment: TAX
+      element: C241.5153
+    description: "Tax type (VAT, GST)"
+    required: false
+
+# Target constraints and validations
+validation:
+  # Required columns that must have values
+  required_columns:
+    - DOCUMENT_NUMBER
+    - DOCUMENT_DATE
+    - BUYER_GLN
+    - SUPPLIER_GLN
+    - LINE_NUMBER
+    - ORDERED_QUANTITY
+    - QUANTITY_UNIT
+  
+  # Data type validations
+  data_types:
+    - column: DOCUMENT_DATE
+      type: date
+      format: "%Y-%m-%d"
+    - column: DELIVERY_DATE
+      type: date
+      format: "%Y-%m-%d"
+    - column: ORDERED_QUANTITY
+      type: decimal
+      min: 0
+    - column: UNIT_PRICE
+      type: decimal
+      min: 0
+    - column: LINE_NUMBER
+      type: integer
+      min: 1
+  
+  # Referential constraints
+  constraints:
+    - name: valid_currency
+      column: CURRENCY
+      allowed_values: ["EUR", "USD", "GBP", "CHF"]
+    - name: valid_country
+      column: BUYER_COUNTRY
+      pattern: "^[A-Z]{2}$"
+    - name: valid_gln
+      column: BUYER_GLN
+      pattern: "^[0-9]{13}$"
+    - name: valid_gln_supplier
+      column: SUPPLIER_GLN
+      pattern: "^[0-9]{13}$"
+
+# Transformation rules
+transformations:
+  # Date format conversions
+  - type: date_format
+    columns: [DOCUMENT_DATE, DELIVERY_DATE, LINE_DELIVERY_DATE]
+    input_format: "102"  # CCYYMMDD from EDI
+    output_format: "%Y-%m-%d"
+  
+  # Decimal normalization
+  - type: decimal_normalize
+    columns: [ORDERED_QUANTITY, UNIT_PRICE, LINE_AMOUNT, TAX_RATE]
+    decimal_places: 4
+  
+  # String trimming
+  - type: trim
+    columns: [BUYER_NAME, SUPPLIER_NAME, PRODUCT_DESCRIPTION]
+  
+  # Upper case conversion
+  - type: uppercase
+    columns: [CURRENCY, BUYER_COUNTRY, QUANTITY_UNIT]
+  
+  # Default values
+  - type: default
+    column: DOCUMENT_TYPE
+    value: "220"
+  - type: default
+    column: LINE_ACTION
+    value: "1"
+  - type: default
+    column: CURRENCY
+    value: "EUR"
+    condition: "source_missing"
+
+# File structure options
+output:
+  # Single file with all line items
+  mode: flat
+  
+  # Alternative: separate header and line files
+  # mode: split
+  # header_file: "orders_header_{document_number}.csv"
+  # line_file: "orders_lines_{document_number}.csv"
+  # join_key: DOCUMENT_NUMBER
+  
+  # Sorting
+  sort:
+    - column: DOCUMENT_NUMBER
+    - column: LINE_NUMBER
+  
+  # Character encoding
+  encoding: UTF-8
+  bom: false  # No Byte Order Mark
+  
+  # Line endings
+  newline: CRLF  # Windows-style for Excel compatibility
+
+# Example output documentation
+example:
+  header_row: |
+    DOCUMENT_NUMBER,DOCUMENT_TYPE,DOCUMENT_DATE,DELIVERY_DATE,BUYER_GLN,BUYER_NAME,BUYER_CITY,BUYER_COUNTRY,SUPPLIER_GLN,SUPPLIER_NAME,DELIVERY_GLN,DELIVERY_NAME,CURRENCY,CONTRACT_REFERENCE,CUSTOMER_ORDER_NUMBER,LINE_NUMBER,LINE_ACTION,PRODUCT_GTIN,PRODUCT_SUPPLIER_CODE,PRODUCT_BUYER_CODE,PRODUCT_DESCRIPTION,ORDERED_QUANTITY,QUANTITY_UNIT,LINE_DELIVERY_DATE,UNIT_PRICE,PRICE_CURRENCY,LINE_AMOUNT,PACKAGING_TYPE,NUMBER_OF_PACKAGES,TAX_RATE,TAX_TYPE
+  
+  data_row: |
+    ORD2024001,220,2024-01-15,2024-01-22,1234567890123,ACME Corporation,Berlin,DE,9876543210987,Global Supply GmbH,1234567890123,ACME Distribution Center,EUR,CTR-2024-001,CPO-12345,1,1,4001234567890,SUP-ABC-123,ACME-001,Premium Widget 2000,100,PCE,2024-01-22,12.5000,EUR,1250.00,CT,10,19.000,VAT
+
+# Documentation
+documentation:
+  purpose: |
+    This schema defines the CSV output format for ORDERS messages.
+    It creates a flat, tabular representation of hierarchical EDI data
+    suitable for import into ERP systems, Excel, or databases.
+  
+  notes: |
+    - One CSV row is generated per LIN (line item) segment
+    - Header-level data (BGM, NAD) is repeated for each line
+    - Dates are normalized to ISO format (YYYY-MM-DD)
+    - Decimal numbers use dot as decimal separator
+    - All string fields are quoted in output
+    - Missing optional fields output as empty strings
+  
+  mapping_notes: |
+    Complex mappings:
+    - NAD segments use qualifier (BY, SU, DP) to distinguish parties
+    - Product codes use qualifier (EN, SA, IN) to identify type
+    - Multiple QTY segments can exist; we extract qualifier 21 (ordered)
+    - DTM segments use qualifier to identify date type
+    - PRI segments use qualifier to identify price type (AAA = net)
+  
+  change_log:
+    - version: "1.0"
+      date: "2026-01-29"
+      changes: "Initial CSV ORDERS target schema"

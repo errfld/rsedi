@@ -1,0 +1,437 @@
+# Partner ACME ORDERS Schema
+# Partner-specific customization extending EANCOM D96A ORDERS baseline
+#
+# Usage: Use this schema for ACME Corporation purchase orders
+# Extension: Adds mandatory requirements and custom codelists
+
+schema_version: "1.0"
+schema_type: message
+
+metadata:
+  name: "ACME Corporation ORDERS"
+  description: "ACME-specific purchase order requirements extending EANCOM D96A"
+  standard: EANCOM
+  version: D96A
+  message_type: ORDERS
+  partner: ACME
+  partner_gln: "1234567890123"
+  base_schema: eancom_d96a_orders
+
+# Inheritance: Extends the baseline EANCOM D96A ORDERS schema
+inherits: eancom_d96a_orders
+
+# Partner-specific overrides and extensions
+# Note: Child mandatory overrides parent optional
+
+segments:
+  # Override: Make CTA mandatory within NAD (was optional in baseline)
+  - position: 45
+    code: CTA
+    name: contact_information
+    mandatory: true
+    max_repetitions: 2
+    description: "ACME requires contact information for buyer and supplier"
+
+  # Override: Restrict RFF to specific reference types
+  - position: 30
+    code: RFF
+    name: reference
+    mandatory: true
+    max_repetitions: 3
+    description: "ACME references: Contract, Purchase Order Acknowledgment"
+    elements:
+      - position: C506
+        name: reference
+        mandatory: true
+        components:
+          - position: 1153
+            name: reference_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            # ACME only allows these reference types
+            codelist: "ACME_1153"
+            description: "CT = Contract, ON = Order number, PD = Promotion deal"
+
+  # Override: Require specific NAD parties
+  - position: 40
+    code: NAD
+    name: name_and_address
+    mandatory: true
+    max_repetitions: 5
+    description: "ACME requires BY (Buyer) and SU (Supplier) parties"
+    elements:
+      - position: 3035
+        name: party_qualifier
+        type: string
+        max_length: 3
+        mandatory: true
+        # ACME-specific party requirements
+        codelist: "ACME_3035"
+        description: "BY = Buyer, SU = Supplier, DP = Delivery party"
+      - position: C082
+        name: party_identification_details
+        mandatory: true
+        components:
+          - position: 3039
+            name: party_id
+            type: string
+            max_length: 35
+            mandatory: true
+            pattern: "^[0-9]{13}$"
+            description: "ACME requires 13-digit GLN for all parties"
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+            mandatory: true
+            fixed_value: "9"
+            description: "Must be 9 (EAN/GS1)"
+
+  # Override: Make CUX mandatory for ACME
+  - position: 50
+    code: CUX
+    name: currencies
+    mandatory: true
+    max_repetitions: 1
+    description: "ACME requires currency information on all orders"
+    elements:
+      - position: C504
+        name: currency_details
+        mandatory: true
+        components:
+          - position: 6347
+            name: currency_details_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            fixed_value: "2"
+            description: "Must be 2 (Reference currency)"
+          - position: 6345
+            name: currency_code
+            type: string
+            max_length: 3
+            mandatory: true
+            # ACME supports these currencies
+            codelist: "ACME_6345"
+            description: "EUR or USD only"
+          - position: 6343
+            name: currency_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            fixed_value: "4"
+            description: "Must be 4 (Invoicing currency)"
+
+  # Override: Require more specific LIN information
+  - position: 60
+    code: LIN
+    name: line_item
+    mandatory: true
+    max_repetitions: 9999
+    description: "ACME order line item with specific identification requirements"
+    elements:
+      - position: 1082
+        name: line_item_number
+        type: integer
+        max_length: 6
+        mandatory: true
+        description: "ACME requires sequential line numbering starting at 1"
+      - position: 1229
+        name: action_request_notification
+        type: string
+        max_length: 3
+        mandatory: false
+        codelist: "1229"
+        description: "1 = Add, 2 = Delete, 3 = Change"
+      - position: C212
+        name: item_number_identification
+        mandatory: true
+        components:
+          - position: 7140
+            name: item_number
+            type: string
+            max_length: 35
+            mandatory: true
+            description: "Product code - GTIN or ACME internal code"
+          - position: 7143
+            name: item_number_type
+            type: string
+            max_length: 3
+            mandatory: true
+            # ACME-specific product codes
+            codelist: "ACME_7143"
+            description: "EN = GTIN, AC = ACME internal code"
+
+  # Override: Make IMD mandatory for ACME (product descriptions required)
+  - position: 64
+    code: IMD
+    name: item_description
+    mandatory: true
+    max_repetitions: 2
+    description: "ACME requires product description"
+    elements:
+      - position: 7077
+        name: description_format_code
+        type: string
+        max_length: 3
+        mandatory: true
+        fixed_value: "A"
+        description: "Must be A (Free-form description)"
+      - position: C273
+        name: item_description
+        mandatory: true
+        components:
+          - position: 7008
+            name: item_description
+            type: string
+            max_length: 256
+            max_occurs: 1
+            mandatory: true
+            description: "Product description (max 256 chars)"
+
+  # Override: Quantity requirements
+  - position: 66
+    code: QTY
+    name: quantity
+    mandatory: true
+    max_repetitions: 3
+    description: "ACME quantity requirements"
+    elements:
+      - position: C186
+        name: quantity_details
+        mandatory: true
+        components:
+          - position: 6063
+            name: quantity_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            codelist: "ACME_6063"
+            description: "21 = Ordered, 12 = Delivered, 59 = Consumer units"
+          - position: 6060
+            name: quantity
+            type: decimal
+            precision: 3
+            max_length: 15
+            mandatory: true
+          - position: 6411
+            name: measurement_unit_code
+            type: string
+            max_length: 3
+            mandatory: true
+            codelist: "ACME_6411"
+            description: "PCE, KGM, or LTR only"
+
+  # Override: Delivery date is mandatory at line level
+  - position: 68
+    code: DTM
+    name: date_time_period_line
+    mandatory: true
+    max_repetitions: 2
+    description: "ACME requires delivery date per line item"
+    elements:
+      - position: C507
+        name: date_time_period
+        mandatory: true
+        components:
+          - position: 2005
+            name: date_time_period_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            fixed_value: "2"
+            description: "Must be 2 (Requested delivery date)"
+          - position: 2380
+            name: date_time_period_value
+            type: date
+            format: "102"
+            max_length: 8
+            mandatory: true
+          - position: 2379
+            name: date_time_period_format_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            fixed_value: "102"
+            description: "Must be 102 (CCYYMMDD)"
+
+  # Override: Price is mandatory for ACME
+  - position: 72
+    code: PRI
+    name: price_details
+    mandatory: true
+    max_repetitions: 2
+    description: "ACME requires price information"
+    elements:
+      - position: C509
+        name: price_information
+        mandatory: true
+        components:
+          - position: 5125
+            name: price_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            fixed_value: "AAA"
+            description: "Must be AAA (Calculation net)"
+          - position: 5118
+            name: price
+            type: decimal
+            precision: 4
+            max_length: 15
+            mandatory: true
+            description: "Unit price"
+          - position: 6411
+            name: measurement_unit_code
+            type: string
+            max_length: 3
+            mandatory: true
+            codelist: "ACME_6411"
+
+# ACME-specific codelists (override/extend baseline)
+codelists:
+  # Reference qualifier - ACME subset
+  "ACME_1153":
+    name: "ACME Reference qualifier"
+    standard: ACME
+    description: "ACME-specific reference types"
+    extends: "1153"
+    codes:
+      "CT": "Contract number"
+      "ON": "ACME order number"
+      "PD": "Promotion deal number"
+
+  # Party qualifier - ACME subset
+  "ACME_3035":
+    name: "ACME Party qualifier"
+    standard: ACME
+    description: "Parties ACME uses in orders"
+    extends: "3035"
+    codes:
+      "BY": "Buyer (ACME entity placing order)"
+      "SU": "Supplier (vendor providing goods)"
+      "DP": "Delivery party (ship to location)"
+      "IV": "Invoicee (if different from buyer)"
+
+  # Currency - ACME supported currencies
+  "ACME_6345":
+    name: "ACME Currency code"
+    standard: ISO 4217
+    description: "Currencies accepted by ACME"
+    extends: "6345"
+    codes:
+      "EUR": "Euro (preferred)"
+      "USD": "US Dollar"
+
+  # Item number type - ACME product identification
+  "ACME_7143":
+    name: "ACME Item number type"
+    standard: ACME
+    description: "Product identification methods used by ACME"
+    extends: "7143"
+    codes:
+      "EN": "EAN/GTIN (14 digits preferred)"
+      "AC": "ACME internal product code"
+      "SA": "Supplier article number (fallback)"
+
+  # Quantity qualifier - ACME quantity types
+  "ACME_6063":
+    name: "ACME Quantity qualifier"
+    standard: ACME
+    description: "Quantity types ACME uses"
+    extends: "6063"
+    codes:
+      "21": "Ordered quantity (mandatory)"
+      "12": "Delivered quantity (for confirmations)"
+      "59": "Consumer units per trade unit"
+
+  # Measurement unit - ACME units
+  "ACME_6411":
+    name: "ACME Measurement unit code"
+    standard: UNCL
+    description: "Units of measure accepted by ACME"
+    extends: "6411"
+    codes:
+      "PCE": "Piece (each) - default"
+      "KGM": "Kilogram (weight-based items)"
+      "LTR": "Liter (liquid items)"
+      "CMT": "Centimeter (length-based items)"
+
+# ACME-specific validation rules
+validation:
+  # Override/extend baseline validations
+  segment_order:
+    - mandatory: [UNH, BGM, DTM, NAD, CUX, LIN]
+    - mandatory: [UNT]
+
+  # ACME-specific conditional rules
+  conditional:
+    - name: "buyer_gln_required"
+      description: "NAD+BY must contain a valid GLN"
+      severity: error
+      condition: "NAD[3035='BY'] exists implies NAD[C082.3055='9']"
+    - name: "supplier_gln_required"
+      description: "NAD+SU must contain a valid GLN"
+      severity: error
+      condition: "NAD[3035='SU'] exists implies NAD[C082.3055='9']"
+    - name: "line_item_description"
+      description: "Each line item should have IMD with product description"
+      severity: warning
+      condition: "LIN exists implies IMD exists in same segment group"
+    - name: "price_with_currency"
+      description: "Price amount must reference CUX currency"
+      severity: warning
+      condition: "PRI exists and CUX exists"
+
+  # Format validations specific to ACME
+  format:
+    - field: "NAD.C082.3039"
+      pattern: "^[0-9]{13}$"
+      description: "Party ID must be 13-digit GLN"
+    - field: "LIN.C212.7140"
+      pattern: "^[0-9]{8,14}$"
+      description: "Product code should be 8-14 digits (GTIN)"
+
+  # Value constraints
+  constraints:
+    - field: "QTY.C186.6060"
+      minimum: 0.001
+      maximum: 999999.999
+      description: "Quantity must be positive and reasonable"
+    - field: "PRI.C509.5118"
+      minimum: 0
+      maximum: 99999999.9999
+      description: "Price must be positive"
+
+# ACME-specific documentation
+documentation:
+  purpose: "ACME Corporation purchase order requirements"
+  contact: "edi-support@acme.example.com"
+  notes: |
+    This schema defines ACME-specific requirements for incoming ORDERS messages.
+
+    Key ACME Requirements:
+    1. All parties must be identified with 13-digit GLN (code 9)
+    2. Contact information (CTA) is mandatory for buyer and supplier
+    3. Currency must be specified (EUR or USD)
+    4. Line items require:
+       - Sequential numbering starting at 1
+       - Product identification (GTIN preferred, ACME code accepted)
+       - Product description (IMD mandatory)
+       - Quantity with unit of measure
+       - Delivery date (DTM mandatory at line level)
+       - Unit price (PRI mandatory)
+
+    5. Only specific reference types accepted (contract, PO number)
+    6. Standard units: PCE, KGM, LTR
+
+    Testing:
+    - Test messages should use GLN 1234567890123 for ACME buyer
+    - Use current date or future dates for delivery
+    - Prices should use AAA (net calculation)
+
+  change_log:
+    - version: "1.0"
+      date: "2026-01-29"
+      changes: "Initial ACME ORDERS schema"

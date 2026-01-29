@@ -1,0 +1,1091 @@
+# EANCOM D96A ORDERS Schema
+# Baseline schema for Purchase Order messages
+# Based on UN/EDIFACT ORDERS D96A with EANCOM extensions
+#
+# Usage: This is the base schema. Partner profiles extend it.
+# Validation: Use schema loader with inheritance support
+
+schema_version: "1.0"
+schema_type: message
+
+metadata:
+  name: "EANCOM D96A ORDERS"
+  description: "Purchase Order message (EANCOM subset of UN/EDIFACT D96A)"
+  standard: EANCOM
+  version: D96A
+  message_type: ORDERS
+  release_date: "1996-10-01"
+
+# Inheritance: This is the base schema (no parent)
+inherits: null
+
+# Service segments (envelope) - UNB/UNZ
+envelope:
+  interchange_header:
+    segment: UNB
+    mandatory: true
+    max_repetitions: 1
+  interchange_trailer:
+    segment: UNZ
+    mandatory: true
+    max_repetitions: 1
+
+# Message header and trailer - UNH/UNT
+message_envelope:
+  header:
+    segment: UNH
+    mandatory: true
+    max_repetitions: 1
+  trailer:
+    segment: UNT
+    mandatory: true
+    max_repetitions: 1
+
+# Message segments in order
+segments:
+  # Beginning of Message - Message identification
+  - position: 10
+    code: BGM
+    name: beginning_of_message
+    mandatory: true
+    max_repetitions: 1
+    description: "Message identification and type"
+    elements:
+      - position: C002
+        name: document_message_name
+        mandatory: true
+        components:
+          - position: 1001
+            name: document_name_code
+            type: string
+            max_length: 3
+            codelist: "1001"
+            description: "E.g., 220 = Order"
+      - position: C106
+        name: document_message_identification
+        mandatory: false
+        components:
+          - position: 1004
+            name: document_number
+            type: string
+            max_length: 35
+            description: "Order number assigned by buyer"
+
+  # Date/Time/Period
+  - position: 20
+    code: DTM
+    name: date_time_period
+    mandatory: true
+    max_repetitions: 10
+    description: "Dates relevant to the order"
+    elements:
+      - position: C507
+        name: date_time_period
+        mandatory: true
+        components:
+          - position: 2005
+            name: date_time_period_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            codelist: "2005"
+            description: "137 = Document date, 2 = Delivery date requested"
+          - position: 2380
+            name: date_time_period_value
+            type: date
+            format: "102"  # CCYYMMDD
+            max_length: 14
+          - position: 2379
+            name: date_time_period_format_qualifier
+            type: string
+            max_length: 3
+            codelist: "2379"
+
+  # SG1 - Reference (RFF segment group)
+  - position: 30
+    code: RFF
+    name: reference
+    mandatory: false
+    max_repetitions: 10
+    description: "Additional references (e.g., contract, project)"
+    elements:
+      - position: C506
+        name: reference
+        mandatory: true
+        components:
+          - position: 1153
+            name: reference_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            codelist: "1153"
+            description: "CT = Contract, PD = Promotion deal, AAK = Despatch advice number"
+          - position: 1154
+            name: reference_number
+            type: string
+            max_length: 70
+
+  # SG2 - NAD segment group (Name and Address)
+  - position: 40
+    code: NAD
+    name: name_and_address
+    mandatory: true
+    max_repetitions: 10
+    description: "Parties involved in the order"
+    elements:
+      - position: 3035
+        name: party_qualifier
+        type: string
+        max_length: 3
+        mandatory: true
+        codelist: "3035"
+        description: "BY = Buyer, SU = Supplier, DP = Delivery party, IV = Invoicee"
+      - position: C082
+        name: party_identification_details
+        mandatory: false
+        components:
+          - position: 3039
+            name: party_id
+            type: string
+            max_length: 35
+            description: "GLN or internal code"
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+            codelist: "1131"
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+            codelist: "3055"
+            description: "9 = EAN (GS1)"
+      - position: C058
+        name: name_and_address
+        mandatory: false
+        components:
+          - position: 3124
+            name: name_and_address_line
+            type: string
+            max_length: 35
+            max_occurs: 5
+      - position: C080
+        name: party_name
+        mandatory: false
+        components:
+          - position: 3036
+            name: party_name
+            type: string
+            max_length: 35
+            max_occurs: 5
+          - position: 3035
+            name: party_name_format_code
+            type: string
+            max_length: 3
+      - position: C059
+        name: street
+        mandatory: false
+        components:
+          - position: 3042
+            name: street_and_number
+            type: string
+            max_length: 35
+            max_occurs: 4
+      - position: 3164
+        name: city_name
+        type: string
+        max_length: 35
+        mandatory: false
+      - position: 3229
+        name: country_subdivision
+        type: string
+        max_length: 9
+        mandatory: false
+      - position: 3251
+        name: postal_identification_code
+        type: string
+        max_length: 9
+        mandatory: false
+      - position: 3207
+        name: country_code
+        type: string
+        max_length: 3
+        mandatory: false
+        codelist: "3207"
+
+  # SG2 - CTA (Contact within NAD)
+  - position: 45
+    code: CTA
+    name: contact_information
+    mandatory: false
+    max_repetitions: 5
+    description: "Contact person within party"
+    elements:
+      - position: 3139
+        name: contact_function_code
+        type: string
+        max_length: 3
+        codelist: "3139"
+        description: "IC = Information contact, OC = Order contact"
+      - position: C056
+        name: contact_details
+        mandatory: false
+        components:
+          - position: 3413
+            name: contact_identifier
+            type: string
+            max_length: 17
+          - position: 3412
+            name: contact_name
+            type: string
+            max_length: 256
+
+  # SG2 - COM (Communication contact)
+  - position: 47
+    code: COM
+    name: communication_contact
+    mandatory: false
+    max_repetitions: 5
+    description: "Communication numbers for contact"
+    elements:
+      - position: C076
+        name: communication_contact
+        mandatory: true
+        components:
+          - position: 3148
+            name: communication_number
+            type: string
+            max_length: 512
+          - position: 3155
+            name: communication_channel_qualifier
+            type: string
+            max_length: 3
+            codelist: "3155"
+            description: "TE = Telephone, EM = Email, FX = Fax"
+
+  # SG7 - CUX (Currencies)
+  - position: 50
+    code: CUX
+    name: currencies
+    mandatory: false
+    max_repetitions: 5
+    description: "Currencies used in the order"
+    elements:
+      - position: C504
+        name: currency_details
+        mandatory: false
+        components:
+          - position: 6347
+            name: currency_details_qualifier
+            type: string
+            max_length: 3
+            codelist: "6347"
+            description: "2 = Reference currency, 3 = Target currency"
+          - position: 6345
+            name: currency_code
+            type: string
+            max_length: 3
+            mandatory: true
+            codelist: "6345"
+            description: "ISO 4217 currency code (EUR, USD, GBP)"
+          - position: 6343
+            name: currency_qualifier
+            type: string
+            max_length: 3
+            codelist: "6343"
+            description: "4 = Invoicing currency, 11 = Payment currency"
+      - position: 5402
+        name: currency_rate
+        type: decimal
+        precision: 4
+        max_length: 12
+        mandatory: false
+
+  # SG25 - Line item (LIN group)
+  - position: 60
+    code: LIN
+    name: line_item
+    mandatory: true
+    max_repetitions: 9999
+    description: "Order line item"
+    elements:
+      - position: 1082
+        name: line_item_number
+        type: integer
+        max_length: 6
+        mandatory: false
+        description: "Sequential line number"
+      - position: 1229
+        name: action_request_notification
+        type: string
+        max_length: 3
+        mandatory: false
+        codelist: "1229"
+        description: "1 = Added, 2 = Deleted, 3 = Changed, 4 = No action"
+      - position: C212
+        name: item_number_identification
+        mandatory: false
+        components:
+          - position: 7140
+            name: item_number
+            type: string
+            max_length: 35
+            description: "Product code (GTIN, supplier code, buyer code)"
+          - position: 7143
+            name: item_number_type
+            type: string
+            max_length: 3
+            codelist: "7143"
+            description: "EN = EAN/GTIN, SA = Supplier article, IB = Buyer item"
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+      - position: C829
+        name: sub_line_information
+        mandatory: false
+        components:
+          - position: 5495
+            name: sub_line_indicator
+            type: string
+            max_length: 3
+          - position: 1082
+            name: line_item_number
+            type: integer
+            max_length: 6
+
+  # PIA - Additional product identification
+  - position: 62
+    code: PIA
+    name: additional_product_id
+    mandatory: false
+    max_repetitions: 10
+    description: "Additional product identifiers"
+    elements:
+      - position: 4347
+        name: product_id_function_qualifier
+        type: string
+        max_length: 3
+        mandatory: true
+        codelist: "4347"
+        description: "1 = Additional identification, 5 = Product identification"
+      - position: C212
+        name: item_number_identification
+        mandatory: true
+        components:
+          - position: 7140
+            name: item_number
+            type: string
+            max_length: 35
+          - position: 7143
+            name: item_number_type
+            type: string
+            max_length: 3
+            codelist: "7143"
+      - position: C212
+        name: item_number_identification_2
+        mandatory: false
+        components:
+          - position: 7140
+            name: item_number
+            type: string
+            max_length: 35
+          - position: 7143
+            name: item_number_type
+            type: string
+            max_length: 3
+            codelist: "7143"
+
+  # IMD - Item description
+  - position: 64
+    code: IMD
+    name: item_description
+    mandatory: false
+    max_repetitions: 10
+    description: "Product description"
+    elements:
+      - position: 7077
+        name: description_format_code
+        type: string
+        max_length: 3
+        codelist: "7077"
+        description: "A = Free-form long description, C = Code (from industry list)"
+      - position: C273
+        name: item_description
+        mandatory: false
+        components:
+          - position: 7009
+            name: item_description_id
+            type: string
+            max_length: 17
+            codelist: "7009"
+            description: "Item type identification code"
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+          - position: 7008
+            name: item_description
+            type: string
+            max_length: 256
+            max_occurs: 10
+            description: "Free text description"
+          - position: 3453
+            name: language_code
+            type: string
+            max_length: 3
+            codelist: "3453"
+
+  # QTY - Quantity
+  - position: 66
+    code: QTY
+    name: quantity
+    mandatory: true
+    max_repetitions: 10
+    description: "Quantities ordered"
+    elements:
+      - position: C186
+        name: quantity_details
+        mandatory: true
+        components:
+          - position: 6063
+            name: quantity_qualifier
+            type: string
+            max_length: 3
+            mandatory: true
+            codelist: "6063"
+            description: "21 = Ordered quantity, 12 = Despatch quantity"
+          - position: 6060
+            name: quantity
+            type: decimal
+            precision: 3
+            max_length: 15
+            mandatory: true
+          - position: 6411
+            name: measurement_unit_code
+            type: string
+            max_length: 3
+            mandatory: false
+            codelist: "6411"
+            description: "KGM = Kilogram, PCE = Piece, LTR = Liter, CMT = Centimeter"
+
+  # DTM within line item
+  - position: 68
+    code: DTM
+    name: date_time_period_line
+    mandatory: false
+    max_repetitions: 5
+    description: "Dates specific to line item (delivery, availability)"
+    elements:
+      - position: C507
+        name: date_time_period
+        mandatory: true
+        components:
+          - position: 2005
+            name: date_time_period_qualifier
+            type: string
+            max_length: 3
+            codelist: "2005"
+            description: "2 = Delivery date requested, 69 = Delivery date promised"
+          - position: 2380
+            name: date_time_period_value
+            type: date
+            max_length: 14
+          - position: 2379
+            name: date_time_period_format_qualifier
+            type: string
+            max_length: 3
+            codelist: "2379"
+
+  # MOA - Monetary amount (line level)
+  - position: 70
+    code: MOA
+    name: monetary_amount_line
+    mandatory: false
+    max_repetitions: 5
+    description: "Line item amounts"
+    elements:
+      - position: C516
+        name: monetary_amount
+        mandatory: true
+        components:
+          - position: 5025
+            name: monetary_amount_type_qualifier
+            type: string
+            max_length: 3
+            codelist: "5025"
+            description: "203 = Line item amount, 38 = Adjusted amount"
+          - position: 5004
+            name: monetary_amount
+            type: decimal
+            precision: 2
+            max_length: 18
+          - position: 6345
+            name: currency_code
+            type: string
+            max_length: 3
+            codelist: "6345"
+          - position: 6343
+            name: currency_qualifier
+            type: string
+            max_length: 3
+            codelist: "6343"
+
+  # PRI - Price details
+  - position: 72
+    code: PRI
+    name: price_details
+    mandatory: false
+    max_repetitions: 5
+    description: "Pricing information for line item"
+    elements:
+      - position: C509
+        name: price_information
+        mandatory: true
+        components:
+          - position: 5125
+            name: price_qualifier
+            type: string
+            max_length: 3
+            codelist: "5125"
+            description: "AAA = Calculation net, AAB = Calculation gross"
+          - position: 5118
+            name: price
+            type: decimal
+            precision: 4
+            max_length: 15
+          - position: 5375
+            name: price_type
+            type: string
+            max_length: 3
+            codelist: "5375"
+            description: "TU = Trade unit, CU = Consumer unit"
+          - position: 5387
+            name: price_type_qualifier
+            type: string
+            max_length: 3
+            codelist: "5387"
+            description: "IN = Indicative, AA = Advice price"
+          - position: 5284
+            name: unit_price_basis
+            type: decimal
+            precision: 3
+            max_length: 9
+          - position: 6411
+            name: measurement_unit_code
+            type: string
+            max_length: 3
+            codelist: "6411"
+
+  # PAC - Package
+  - position: 74
+    code: PAC
+    name: package
+    mandatory: false
+    max_repetitions: 10
+    description: "Packaging information"
+    elements:
+      - position: 7224
+        name: number_of_packages
+        type: integer
+        max_length: 8
+      - position: C531
+        name: packaging_details
+        mandatory: false
+        components:
+          - position: 7075
+            name: packaging_level
+            type: string
+            max_length: 3
+            codelist: "7075"
+            description: "1 = Inner, 2 = Intermediate, 3 = Outer"
+          - position: 7233
+            name: packaging_related_description
+            type: string
+            max_length: 3
+            codelist: "7233"
+          - position: 7073
+            name: packaging_terms_and_conditions
+            type: string
+            max_length: 3
+            codelist: "7073"
+      - position: C202
+        name: package_type
+        mandatory: false
+        components:
+          - position: 7065
+            name: type_of_packages
+            type: string
+            max_length: 35
+            codelist: "7065"
+            description: "Type of package (CT = Carton, BX = Box)"
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+          - position: 7064
+            name: type_of_packages_2
+            type: string
+            max_length: 35
+
+  # LOC - Place/location identification
+  - position: 76
+    code: LOC
+    name: place_location_identification
+    mandatory: false
+    max_repetitions: 10
+    description: "Locations (delivery point, warehouse)"
+    elements:
+      - position: 3227
+        name: location_function_code_qualifier
+        type: string
+        max_length: 3
+        mandatory: true
+        codelist: "3227"
+        description: "7 = Delivery location, 11 = Place of discharge"
+      - position: C517
+        name: location_identification
+        mandatory: false
+        components:
+          - position: 3225
+            name: location_identifier
+            type: string
+            max_length: 35
+            description: "GLN or location code"
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+            codelist: "3055"
+            description: "9 = GS1"
+      - position: C519
+        name: related_location_one_identification
+        mandatory: false
+        components:
+          - position: 3223
+            name: first_related_location_identifier
+            type: string
+            max_length: 35
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+      - position: C553
+        name: related_location_two_identification
+        mandatory: false
+        components:
+          - position: 3233
+            name: second_related_location_identifier
+            type: string
+            max_length: 35
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+      - position: 5479
+        name: relation_code
+        type: string
+        max_length: 3
+        codelist: "5479"
+
+  # TAX - Duty/tax/fee details
+  - position: 78
+    code: TAX
+    name: duty_tax_fee_details
+    mandatory: false
+    max_repetitions: 5
+    description: "Tax information for line item"
+    elements:
+      - position: 5283
+        name: duty_tax_fee_function_qualifier
+        type: string
+        max_length: 3
+        mandatory: true
+        codelist: "5283"
+        description: "7 = Tax, 5 = Customs duty"
+      - position: C241
+        name: duty_tax_fee_type
+        mandatory: false
+        components:
+          - position: 5153
+            name: duty_tax_fee_type
+            type: string
+            max_length: 3
+            codelist: "5153"
+            description: "VAT = Value added tax"
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+      - position: C533
+        name: duty_tax_fee_account_detail
+        mandatory: false
+        components:
+          - position: 5289
+            name: duty_tax_fee_account_code
+            type: string
+            max_length: 6
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+      - position: 5286
+        name: duty_tax_fee_assessment_basis
+        type: decimal
+        precision: 2
+        max_length: 15
+      - position: C243
+        name: duty_tax_fee_detail
+        mandatory: false
+        components:
+          - position: 5279
+            name: duty_tax_fee_rate_code
+            type: string
+            max_length: 7
+          - position: 1131
+            name: code_list_qualifier
+            type: string
+            max_length: 3
+          - position: 3055
+            name: code_list_responsible_agency
+            type: string
+            max_length: 3
+          - position: 5278
+            name: duty_tax_fee_rate
+            type: decimal
+            precision: 3
+            max_length: 17
+          - position: 5273
+            name: duty_tax_fee_rate_basis_code
+            type: string
+            max_length: 12
+      - position: 5305
+        name: duty_tax_fee_category_code
+        type: string
+        max_length: 3
+        codelist: "5305"
+        description: "E = Exempt from tax, S = Standard rate"
+
+# Codelists referenced in this schema
+codelists:
+  "1001":
+    name: "Document name code"
+    standard: UNCL
+    description: "Code specifying the document name"
+    codes:
+      "220": "Order"
+      "221": "Blanket order"
+      "224": "Rush order"
+      "225": "Repair order"
+      "227": "Call off order"
+
+  "1153":
+    name: "Reference qualifier"
+    standard: UNCL
+    description: "Code giving specific meaning to a reference segment"
+    codes:
+      "AAK": "Despatch advice number"
+      "CT": "Contract number"
+      "CR": "Customer reference number"
+      "PD": "Promotion deal number"
+      "ON": "Order number (sender)"
+      "VN": "Order number (vendor)"
+
+  "2005":
+    name: "Date/time/period qualifier"
+    standard: UNCL
+    description: "Code qualifying the type of date"
+    codes:
+      "2": "Delivery date/time, requested"
+      "10": "Shipment date/time, requested"
+      "12": "Terms net due date"
+      "13": "Terms discount due date"
+      "69": "Delivery date/time, promised for"
+      "137": "Document/message date/time"
+
+  "2379":
+    name: "Date/time/period format qualifier"
+    standard: UNCL
+    description: "Format of date value"
+    codes:
+      "101": "YYMMDD"
+      "102": "CCYYMMDD"
+      "203": "CCYYMMDDHHMM"
+
+  "3035":
+    name: "Party qualifier"
+    standard: UNCL
+    description: "Code giving specific meaning to a party"
+    codes:
+      "BY": "Buyer"
+      "SU": "Supplier"
+      "DP": "Delivery party"
+      "IV": "Invoicee"
+      "OB": "Ordered by"
+      "PR": "Payer"
+      "PE": "Payee"
+
+  "3055":
+    name: "Code list responsible agency"
+    standard: UNCL
+    description: "Code specifying the agency responsible for a code list"
+    codes:
+      "5": "ISO (International Organization for Standardization)"
+      "6": "UNECE (United Nations Economic Commission for Europe)"
+      "9": "EAN (GS1)"
+      "92": "Assigned by buyer or buyer's agent"
+      "93": "Assigned by seller or seller's agent"
+
+  "3139":
+    name: "Contact function code"
+    standard: UNCL
+    description: "Code specifying the function of a contact"
+    codes:
+      "AD": "Accounting contact"
+      "IC": "Information contact"
+      "OC": "Order contact"
+      "SU": "Supplier contact"
+
+  "3155":
+    name: "Communication channel qualifier"
+    standard: UNCL
+    description: "Code specifying the type of communication channel"
+    codes:
+      "EM": "Electronic mail"
+      "FX": "Telefax"
+      "TE": "Telephone"
+      "TL": "Telex"
+      "XF": "X.400 address"
+
+  "3207":
+    name: "Country code"
+    standard: ISO 3166
+    description: "ISO 3166 two or three letter country code"
+    codes:
+      "DE": "Germany"
+      "FR": "France"
+      "GB": "United Kingdom"
+      "US": "United States"
+      "NL": "Netherlands"
+      "BE": "Belgium"
+      "IT": "Italy"
+      "ES": "Spain"
+      "CH": "Switzerland"
+      "AT": "Austria"
+
+  "4347":
+    name: "Product identifier function qualifier"
+    standard: UNCL
+    description: "Code qualifying the function of the product identifier"
+    codes:
+      "1": "Additional identification"
+      "2": "Product identification"
+      "3": "Item description"
+      "4": "Buyer's item number"
+      "5": "Vendor's item number"
+
+  "5025":
+    name: "Monetary amount type qualifier"
+    standard: UNCL
+    description: "Code specifying the type of monetary amount"
+    codes:
+      "38": "Invoice item amount"
+      "52": "Discount amount"
+      "79": "Total line items amount"
+      "125": "Tax amount"
+      "203": "Line item amount"
+
+  "5125":
+    name: "Price qualifier"
+    standard: UNCL
+    description: "Code qualifying a price"
+    codes:
+      "AAA": "Calculation net"
+      "AAB": "Calculation gross"
+      "AAE": "Information price, excluding allowances or charges, including taxes"
+
+  "5153":
+    name: "Duty/tax/fee type"
+    standard: UNCL
+    description: "Code specifying the type of duty, tax, or fee"
+    codes:
+      "VAT": "Value added tax"
+      "GST": "Goods and services tax"
+
+  "5283":
+    name: "Duty/tax/fee function qualifier"
+    standard: UNCL
+    description: "Code qualifying the duty, tax, or fee function"
+    codes:
+      "5": "Customs duty"
+      "7": "Tax"
+
+  "5305":
+    name: "Duty/tax/fee category code"
+    standard: UNCL
+    description: "Code specifying a duty, tax, or fee category"
+    codes:
+      "E": "Exempt from tax"
+      "S": "Standard rate"
+      "Z": "Zero rated goods"
+
+  "6063":
+    name: "Quantity qualifier"
+    standard: UNCL
+    description: "Code qualifying the type of quantity"
+    codes:
+      "12": "Despatch quantity"
+      "21": "Ordered quantity"
+      "46": "Current inventory quantity"
+      "47": "Previous inventory quantity"
+      "59": "Number of consumer units in the traded unit"
+      "61": "Quantity per pack"
+
+  "6345":
+    name: "Currency code"
+    standard: ISO 4217
+    description: "ISO 4217 three-letter currency code"
+    codes:
+      "EUR": "Euro"
+      "USD": "US Dollar"
+      "GBP": "British Pound"
+      "CHF": "Swiss Franc"
+
+  "6411":
+    name: "Measurement unit code"
+    standard: UNCL
+    description: "Code specifying the unit of measurement"
+    codes:
+      "CMT": "Centimetre"
+      "GRM": "Gram"
+      "KGM": "Kilogram"
+      "LTR": "Litre"
+      "MTR": "Metre"
+      "PCE": "Piece"
+      "SET": "Set"
+      "MMT": "Millimetre"
+
+  "7143":
+    name: "Item number type code"
+    standard: UNCL
+    description: "Code qualifying the type of item number"
+    codes:
+      "BP": "Buyer's part number"
+      "EN": "International Article Numbering Association (EAN)"
+      "IB": "Buyer's internal product group code"
+      "IN": "Buyer's item number"
+      "SA": "Supplier's article number"
+      "SR": "Supplier's product group code"
+      "UP": "UPC (Universal product code)"
+
+  "7065":
+    name: "Type of packages"
+    standard: UNCL
+    description: "Code specifying the type of package"
+    codes:
+      "BX": "Box"
+      "CT": "Carton"
+      "PK": "Package"
+      "PA": "Pallet"
+      "CR": "Crate"
+
+  "7075":
+    name: "Packaging level"
+    standard: UNCL
+    description: "Code specifying a level of packaging"
+    codes:
+      "1": "Inner"
+      "2": "Intermediate"
+      "3": "Outer"
+
+  "7077":
+    name: "Description format code"
+    standard: UNCL
+    description: "Code specifying the format of a description"
+    codes:
+      "A": "Free-form long description"
+      "C": "Code (from industry code list)"
+
+  "1229":
+    name: "Action request/notification description code"
+    standard: UNCL
+    description: "Code specifying an action to be taken or already taken"
+    codes:
+      "1": "Added"
+      "2": "Deleted"
+      "3": "Changed"
+      "4": "No action"
+
+# Validation rules
+validation:
+  # Segment order rules
+  segment_order:
+    - mandatory: [UNH, BGM, DTM, LIN]
+    - mandatory: [UNT]
+
+  # Conditional rules
+  conditional:
+    - name: "lin_qty_required"
+      description: "Each LIN segment must have at least one QTY segment"
+      condition: "segment(LIN) exists implies segment(QTY) exists"
+    - name: "delivery_date_required"
+      description: "At least one DTM with qualifier 2 (requested delivery) must exist"
+      condition: "exists(DTM[C507.2005='2'])"
+
+  # Cross-segment validations
+  cross_segment:
+    - name: "currency_consistency"
+      description: "If CUX is present, all monetary amounts should specify currency"
+      severity: warning
+
+# Documentation
+documentation:
+  purpose: "This schema defines the structure for EANCOM D96A ORDERS messages"
+  notes: |
+    This is a pragmatic subset of the full D96A ORDERS specification.
+    It includes the most commonly used segments and elements for
+    purchase order processing in European retail/supply chain contexts.
+
+    Key features:
+    - Supports multiple line items (up to 9999)
+    - Flexible party identification (GLN, internal codes)
+    - Rich product identification (GTIN, supplier codes, buyer codes)
+    - Currency and pricing support
+    - Tax handling
+
+  references:
+    - "EANCOM 2002 S3 ORDERS D.96A"
+    - "UN/EDIFACT D.96A ORDERS"
+    - "GS1 EANCOM Guidelines"
