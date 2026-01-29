@@ -6,10 +6,11 @@
 //! for column mapping and type conversion.
 
 pub mod reader;
-pub mod writer;
 pub mod schema;
+pub mod writer;
 
 pub use reader::CsvReader;
+pub use schema::{ColumnDef, ColumnType, CsvSchema, SchemaError};
 pub use writer::CsvWriter;
 
 use thiserror::Error;
@@ -19,16 +20,16 @@ use thiserror::Error;
 pub enum Error {
     #[error("CSV read error: {0}")]
     Read(String),
-    
+
     #[error("CSV write error: {0}")]
     Write(String),
-    
+
     #[error("Schema error: {0}")]
     Schema(String),
-    
+
     #[error("Conversion error: {0}")]
     Conversion(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

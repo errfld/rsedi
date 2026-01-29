@@ -1,9 +1,10 @@
 //! Acceptance policies and strictness levels
 
 /// Policy for handling validation errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AcceptancePolicy {
     /// Accept all messages, report errors as warnings
+    #[default]
     AcceptAll,
 
     /// Fail entire file if any message has errors
@@ -14,9 +15,10 @@ pub enum AcceptancePolicy {
 }
 
 /// Strictness level for validation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StrictnessLevel {
     /// Accept with warnings (real-world EDI)
+    #[default]
     Permissive,
 
     /// Standard validation
@@ -24,16 +26,4 @@ pub enum StrictnessLevel {
 
     /// Strict validation (fail on warnings)
     Strict,
-}
-
-impl Default for AcceptancePolicy {
-    fn default() -> Self {
-        Self::AcceptAll
-    }
-}
-
-impl Default for StrictnessLevel {
-    fn default() -> Self {
-        Self::Permissive
-    }
 }

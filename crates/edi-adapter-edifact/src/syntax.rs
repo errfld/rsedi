@@ -178,8 +178,8 @@ impl<'a> SyntaxBuffer<'a> {
         }
 
         let tag = &self.data[self.pos..self.pos + 3];
-        // Validate tag format (3 uppercase letters or digits)
-        if tag.iter().all(|&b| b.is_ascii_alphanumeric()) {
+        // Validate tag format (3 uppercase letters A-Z)
+        if tag.iter().all(|&b| b.is_ascii_uppercase()) {
             self.pos += 3;
             Some([tag[0], tag[1], tag[2]])
         } else {
@@ -280,5 +280,116 @@ mod tests {
 
         let tag = buf.read_tag().unwrap();
         assert_eq!(tag, [b'U', b'N', b'B']);
+    }
+
+    #[test]
+    fn test_read_tag_valid_uppercase() {
+        // Valid uppercase tags should be accepted
+        let test_cases = [
+            (b"UNB", [b'U', b'N', b'B']),
+            (b"BGM", [b'B', b'G', b'M']),
+            (b"NAD", [b'N', b'A', b'D']),
+            (b"ABC", [b'A', b'B', b'C']),
+            (b"XYZ", [b'X', b'Y', b'Z']),
+        ];
+
+        for (input, expected) in test_cases {
+            let mut buf = SyntaxBuffer::new(input);
+            let tag = buf.read_tag().unwrap();
+            assert_eq!(
+                tag,
+                expected,
+                "Failed for input: {}",
+                std::str::from_utf8(input).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_tag_invalid_lowercase() {
+        // Lowercase tags should be rejected
+        let data = b"unb+rest";
+        let mut buf = SyntaxBuffer::new(data);
+
+        let tag = buf.read_tag();
+        assert!(tag.is_none(), "Lowercase tag 'unb' should be rejected");
+        // Position should not advance on invalid tag
+        assert_eq!(buf.pos, 0);
+    }
+
+    #[test]
+    fn test_read_tag_invalid_numbers() {
+        // Tags with numbers should be rejected
+        let test_cases = [
+            b"BG1", // digit in tag
+            b"123", // all digits
+            b"UN1", // mixed letter and digit
+        ];
+
+        for input in test_cases {
+            let mut buf = SyntaxBuffer::new(input);
+            let tag = buf.read_tag();
+            assert!(
+                tag.is_none(),
+                "Tag with numbers '{}' should be rejected",
+                std::str::from_utf8(input).unwrap()
+            );
+            assert_eq!(buf.pos, 0, "Position should not advance for invalid tag");
+        }
+    }
+
+    #[test]
+    fn test_read_tag_invalid_special_chars() {
+        // Tags with special characters should be rejected
+        let test_cases = [
+            b"UN+", // special char
+            b"A-B", // hyphen
+            b"U_B", // underscore
+            b"UN ", // space
+        ];
+
+        for input in test_cases {
+            let mut buf = SyntaxBuffer::new(input);
+            let tag = buf.read_tag();
+            assert!(
+                tag.is_none(),
+                "Tag with special chars '{}' should be rejected",
+                std::str::from_utf8(input).unwrap()
+            );
+            assert_eq!(buf.pos, 0, "Position should not advance for invalid tag");
+        }
+    }
+
+    #[test]
+    fn test_read_tag_mixed_case() {
+        // Mixed case tags should be rejected
+        let test_cases = [
+            b"Unb", // first lowercase
+            b"uNB", // first uppercase, rest lowercase
+            b"UnB", // mixed
+        ];
+
+        for input in test_cases {
+            let mut buf = SyntaxBuffer::new(input);
+            let tag = buf.read_tag();
+            assert!(
+                tag.is_none(),
+                "Mixed case tag '{}' should be rejected",
+                std::str::from_utf8(input).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_tag_insufficient_data() {
+        // Less than 3 bytes should return None
+        let data = b"UN";
+        let mut buf = SyntaxBuffer::new(data);
+
+        let tag = buf.read_tag();
+        assert!(
+            tag.is_none(),
+            "Should return None when less than 3 bytes available"
+        );
     }
 }
