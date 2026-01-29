@@ -1,0 +1,13 @@
+{
+  "name": "ORDERS",
+  "version": "D96A",
+  "extends": "eancom_d96a_orders",
+  "overrides": {
+    "segments": [
+      {
+        "tag": "NAD",
+        "is_mandatory": true
+      }
+    ]
+  }
+}

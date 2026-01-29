@@ -1,0 +1,10 @@
+{
+  "name": "invalid",
+  "version": "1.0",
+  "segments": [
+    {
+      "tag": "BAD",
+      "elements": "not_an_array"
+    }
+  ]
+}

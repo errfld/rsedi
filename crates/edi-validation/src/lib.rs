@@ -5,13 +5,13 @@
 //! This crate provides validation against runtime schemas with configurable
 //! strictness levels and detailed error reporting.
 
-pub mod engine;
-pub mod rules;
 pub mod codelist;
+pub mod engine;
 pub mod reporter;
+pub mod rules;
 
 pub use engine::ValidationEngine;
-pub use reporter::ValidationReporter;
+pub use reporter::{Severity, ValidationIssue, ValidationReport, ValidationReporter};
 
 use thiserror::Error;
 
@@ -20,10 +20,10 @@ use thiserror::Error;
 pub enum Error {
     #[error("Validation failed: {0}")]
     Validation(String),
-    
+
     #[error("Schema error: {0}")]
     Schema(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

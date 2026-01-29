@@ -1,0 +1,82 @@
+{
+  "name": "ORDERS",
+  "version": "D96A",
+  "segments": [
+    {
+      "tag": "UNH",
+      "elements": [
+        {
+          "id": "0062",
+          "name": "Message reference number",
+          "data_type": "an",
+          "min_length": 1,
+          "max_length": 14,
+          "is_mandatory": true
+        }
+      ],
+      "is_mandatory": true,
+      "max_repetitions": null
+    },
+    {
+      "tag": "BGM",
+      "elements": [
+        {
+          "id": "C002",
+          "name": "Document/message name",
+          "data_type": "c",
+          "min_length": 1,
+          "max_length": 35,
+          "is_mandatory": true
+        },
+        {
+          "id": "1004",
+          "name": "Document number",
+          "data_type": "an",
+          "min_length": 1,
+          "max_length": 35,
+          "is_mandatory": false
+        }
+      ],
+      "is_mandatory": true,
+      "max_repetitions": null
+    },
+    {
+      "tag": "DTM",
+      "elements": [
+        {
+          "id": "C507",
+          "name": "Date/time/period",
+          "data_type": "c",
+          "min_length": 1,
+          "max_length": 35,
+          "is_mandatory": true
+        }
+      ],
+      "is_mandatory": false,
+      "max_repetitions": 99
+    },
+    {
+      "tag": "NAD",
+      "elements": [
+        {
+          "id": "3035",
+          "name": "Party qualifier",
+          "data_type": "an",
+          "min_length": 1,
+          "max_length": 3,
+          "is_mandatory": true
+        },
+        {
+          "id": "C082",
+          "name": "Party identification details",
+          "data_type": "c",
+          "min_length": 1,
+          "max_length": 35,
+          "is_mandatory": false
+        }
+      ],
+      "is_mandatory": false,
+      "max_repetitions": 99
+    }
+  ]
+}
