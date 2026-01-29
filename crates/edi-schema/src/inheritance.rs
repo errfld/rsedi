@@ -11,6 +11,18 @@ pub enum InheritanceError {
     InvalidOverride(String),
 }
 
+impl std::fmt::Display for InheritanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InheritanceError::CircularDependency(msg) => write!(f, "Circular dependency: {}", msg),
+            InheritanceError::ParentNotFound(msg) => write!(f, "Parent not found: {}", msg),
+            InheritanceError::InvalidOverride(msg) => write!(f, "Invalid override: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for InheritanceError {}
+
 /// Tracks inheritance relationships to detect cycles
 pub struct InheritanceGraph {
     edges: Vec<(String, String)>, // (child, parent)
@@ -58,16 +70,34 @@ impl Default for InheritanceGraph {
     }
 }
 
+/// Detect if adding a child -> parent relationship would create a circular dependency
+/// given the set of already visited schemas
+pub fn detect_circular_dependency(child: &str, parent: &str, visited: &HashSet<String>) -> bool {
+    if child == parent {
+        return true;
+    }
+
+    // If the parent has already been visited in this chain, it's a cycle
+    if visited.contains(parent) {
+        return true;
+    }
+
+    false
+}
+
 /// Merge parent schema into child schema
 /// Child properties take precedence over parent properties
-pub fn merge_schemas(parent: &Schema, child: &mut Schema) {
+pub fn merge_schemas(parent: &Schema, child: &Schema) -> Schema {
     // Collect child tag names first (owned Strings to avoid borrow issues)
     let child_tags: HashSet<String> = child.segments.iter().map(|s| s.tag.clone()).collect();
+
+    // Start with child's segments
+    let mut merged_segments = child.segments.clone();
 
     // Add parent segments that child doesn't have
     for parent_segment in &parent.segments {
         if !child_tags.contains(&parent_segment.tag) {
-            child.segments.push(parent_segment.clone());
+            merged_segments.push(parent_segment.clone());
         }
     }
 
@@ -82,11 +112,18 @@ pub fn merge_schemas(parent: &Schema, child: &mut Schema) {
 
     for tag in segment_tags_to_merge {
         if let Some(parent_segment) = parent.segments.iter().find(|s| s.tag == tag) {
-            if let Some(child_segment) = child.segments.iter_mut().find(|s| s.tag == tag) {
+            if let Some(child_segment) = merged_segments.iter_mut().find(|s| s.tag == tag) {
                 merge_segment_definitions(parent_segment, child_segment);
             }
         }
     }
+
+    let mut result = Schema::new(&child.name, &child.version).with_segments(merged_segments);
+
+    // Preserve inheritance metadata from child
+    result.inheritance = child.inheritance.clone();
+
+    result
 }
 
 fn merge_segment_definitions(parent: &SegmentDefinition, child: &mut SegmentDefinition) {
@@ -98,6 +135,18 @@ fn merge_segment_definitions(parent: &SegmentDefinition, child: &mut SegmentDefi
         if !child_element_ids.contains(&parent_element.id) {
             child.elements.push(parent_element.clone());
         }
+    }
+
+    // Merge segment-level properties
+    // Child mandatory overrides parent optional
+    if child.is_mandatory || parent.is_mandatory {
+        child.is_mandatory = true;
+    }
+
+    // Child max_repetitions overrides parent only if child has a value
+    // If child has None, inherit from parent
+    if child.max_repetitions.is_none() && parent.max_repetitions.is_some() {
+        child.max_repetitions = parent.max_repetitions;
     }
 }
 
@@ -136,7 +185,7 @@ pub fn apply_inheritance_chain(chain: &[&Schema]) -> Option<Schema> {
 
     // Apply each subsequent level
     for parent in &chain[1..] {
-        merge_schemas(parent, &mut result);
+        result = merge_schemas(&result, parent);
     }
 
     Some(result)
@@ -152,19 +201,7 @@ pub fn merge_constraints(parent: &[Constraint], child: &[Constraint]) -> Vec<Con
         let should_replace = result
             .iter()
             .enumerate()
-            .find(|(_, c)| match (c, child_constraint) {
-                (Constraint::Required(_), Constraint::Required(_)) => true,
-                (Constraint::Length { path: p1, .. }, Constraint::Length { path: p2, .. }) => {
-                    p1 == p2
-                }
-                (Constraint::Pattern { path: p1, .. }, Constraint::Pattern { path: p2, .. }) => {
-                    p1 == p2
-                }
-                (Constraint::CodeList { path: p1, .. }, Constraint::CodeList { path: p2, .. }) => {
-                    p1 == p2
-                }
-                _ => false,
-            });
+            .find(|(_, c)| c.conflicts_with(child_constraint));
 
         if let Some((idx, _)) = should_replace {
             result[idx] = child_constraint.clone();
@@ -176,17 +213,20 @@ pub fn merge_constraints(parent: &[Constraint], child: &[Constraint]) -> Vec<Con
     result
 }
 
+/// Extend codelist constraints by merging allowed values
+pub fn extend_codelist(parent_codes: &[String], child_codes: &[String]) -> Vec<String> {
+    let mut result: HashSet<String> = parent_codes.iter().cloned().collect();
+    result.extend(child_codes.iter().cloned());
+    result.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ElementDefinition;
+    use crate::model::{ElementDefinition, Schema, SchemaRef};
 
     fn create_test_schema(name: &str, segments: Vec<SegmentDefinition>) -> Schema {
-        Schema {
-            name: name.to_string(),
-            version: "1.0".to_string(),
-            segments,
-        }
+        Schema::new(name, "1.0").with_segments(segments)
     }
 
     fn create_segment(
@@ -203,14 +243,7 @@ mod tests {
     }
 
     fn create_element(id: &str, name: &str, mandatory: bool) -> ElementDefinition {
-        ElementDefinition {
-            id: id.to_string(),
-            name: name.to_string(),
-            data_type: "an".to_string(),
-            min_length: 1,
-            max_length: 35,
-            is_mandatory: mandatory,
-        }
+        ElementDefinition::new(id, name, "an").mandatory(mandatory)
     }
 
     #[test]
@@ -223,7 +256,7 @@ mod tests {
             ],
         );
 
-        let mut child = create_test_schema(
+        let child = create_test_schema(
             "child",
             vec![create_segment(
                 "DTM",
@@ -232,13 +265,100 @@ mod tests {
             )],
         );
 
-        merge_schemas(&parent, &mut child);
+        let merged = merge_schemas(&parent, &child);
 
-        assert_eq!(child.segments.len(), 3);
-        let tags: Vec<String> = child.segments.iter().map(|s| s.tag.clone()).collect();
+        assert_eq!(merged.segments.len(), 3);
+        let tags: Vec<String> = merged.segments.iter().map(|s| s.tag.clone()).collect();
         assert!(tags.contains(&"UNH".to_string()));
         assert!(tags.contains(&"BGM".to_string()));
         assert!(tags.contains(&"DTM".to_string()));
+    }
+
+    #[test]
+    fn test_merge_schemas_preserves_child_properties() {
+        let parent = create_test_schema(
+            "parent",
+            vec![create_segment(
+                "BGM",
+                vec![
+                    create_element("C002", "Parent Name", true),
+                    create_element("1004", "Number", false),
+                ],
+                false, // parent not mandatory
+            )],
+        );
+
+        let child = create_test_schema(
+            "child",
+            vec![create_segment(
+                "BGM",
+                vec![
+                    create_element("C002", "Child Name", true),
+                    create_element("1225", "Function", true),
+                ],
+                true, // child mandatory
+            )],
+        );
+
+        let merged = merge_schemas(&parent, &child);
+
+        let bgm = merged.find_segment("BGM").unwrap();
+        assert!(bgm.is_mandatory); // Child overrides
+        assert_eq!(bgm.elements.len(), 3);
+
+        // Child's C002 is preserved
+        let c002 = bgm.find_element("C002").unwrap();
+        assert_eq!(c002.name, "Child Name");
+
+        // Parent's 1004 is added
+        assert!(bgm.find_element("1004").is_some());
+
+        // Child's 1225 is preserved
+        assert!(bgm.find_element("1225").is_some());
+    }
+
+    #[test]
+    fn test_merge_override_mandatory() {
+        // Parent optional, child mandatory -> mandatory
+        let parent = create_segment("TEST", vec![], false);
+        let mut child = create_segment("TEST", vec![], true);
+
+        merge_segment_definitions(&parent, &mut child);
+
+        assert!(child.is_mandatory);
+    }
+
+    #[test]
+    fn test_merge_inherit_mandatory() {
+        // Parent mandatory, child optional -> mandatory
+        let parent = create_segment("TEST", vec![], true);
+        let mut child = create_segment("TEST", vec![], false);
+
+        merge_segment_definitions(&parent, &mut child);
+
+        assert!(child.is_mandatory);
+    }
+
+    #[test]
+    fn test_merge_inherit_max_repetitions() {
+        // Parent has max_repetitions, child doesn't -> inherit
+        let parent = SegmentDefinition::new("TEST").max_repetitions(99);
+        let mut child = SegmentDefinition::new("TEST");
+
+        merge_segment_definitions(&parent, &mut child);
+
+        assert_eq!(child.max_repetitions, Some(99));
+    }
+
+    #[test]
+    fn test_merge_override_max_repetitions() {
+        // Parent has max_repetitions, child has different -> keep child's
+        let parent = SegmentDefinition::new("TEST").max_repetitions(99);
+        let mut child = SegmentDefinition::new("TEST").max_repetitions(5);
+
+        merge_segment_definitions(&parent, &mut child);
+
+        assert_eq!(child.max_repetitions, Some(5));
     }
 
     #[test]
@@ -274,7 +394,7 @@ mod tests {
             )],
         );
 
-        let mut child = create_test_schema(
+        let child = create_test_schema(
             "child",
             vec![SegmentDefinition {
                 tag: "BGM".to_string(),
@@ -284,10 +404,10 @@ mod tests {
             }],
         );
 
-        merge_schemas(&parent, &mut child);
+        let merged = merge_schemas(&parent, &child);
 
-        let bgm = child.segments.iter().find(|s| s.tag == "BGM").unwrap();
-        assert!(!bgm.is_mandatory); // Child value preserved
+        let bgm = merged.segments.iter().find(|s| s.tag == "BGM").unwrap();
+        assert!(bgm.is_mandatory); // OR of both: true || false = true
         assert_eq!(bgm.elements[0].name, "Overridden Name"); // Child value preserved
     }
 
@@ -359,15 +479,15 @@ mod tests {
         );
 
         // Child only inherits UNH and adds NAD
-        let mut child = create_test_schema("child", vec![create_segment("NAD", vec![], false)]);
+        let child = create_test_schema("child", vec![create_segment("NAD", vec![], false)]);
 
-        merge_schemas(&parent, &mut child);
+        let merged = merge_schemas(&parent, &child);
 
-        assert_eq!(child.segments.len(), 4);
-        assert!(child.segments.iter().any(|s| s.tag == "UNH"));
-        assert!(child.segments.iter().any(|s| s.tag == "BGM"));
-        assert!(child.segments.iter().any(|s| s.tag == "DTM"));
-        assert!(child.segments.iter().any(|s| s.tag == "NAD"));
+        assert_eq!(merged.segments.len(), 4);
+        assert!(merged.segments.iter().any(|s| s.tag == "UNH"));
+        assert!(merged.segments.iter().any(|s| s.tag == "BGM"));
+        assert!(merged.segments.iter().any(|s| s.tag == "DTM"));
+        assert!(merged.segments.iter().any(|s| s.tag == "NAD"));
     }
 
     #[test]
@@ -430,5 +550,80 @@ mod tests {
 
         // Child's 1225 is preserved
         assert!(child_segment.elements.iter().any(|e| e.id == "1225"));
+    }
+
+    #[test]
+    fn test_detect_circular_dependency_direct() {
+        let mut visited = HashSet::new();
+        visited.insert("A: 1.0".to_string());
+
+        assert!(detect_circular_dependency("A: 1.0", "A: 1.0", &visited));
+    }
+
+    #[test]
+    fn test_detect_circular_dependency_in_chain() {
+        let mut visited = HashSet::new();
+        visited.insert("A: 1.0".to_string());
+        visited.insert("B: 1.0".to_string());
+
+        // B -> A would be a cycle since A is already visited
+        assert!(detect_circular_dependency("B: 1.0", "A: 1.0", &visited));
+    }
+
+    #[test]
+    fn test_detect_no_circular_dependency() {
+        let mut visited = HashSet::new();
+        visited.insert("A: 1.0".to_string());
+
+        // A -> B is fine, B not visited yet
+        assert!(!detect_circular_dependency("A: 1.0", "B: 1.0", &visited));
+    }
+
+    #[test]
+    fn test_extend_codelist() {
+        let parent = vec!["A".to_string(), "B".to_string()];
+        let child = vec!["B".to_string(), "C".to_string()];
+
+        let result = extend_codelist(&parent, &child);
+
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&"A".to_string()));
+        assert!(result.contains(&"B".to_string()));
+        assert!(result.contains(&"C".to_string()));
+    }
+
+    #[test]
+    fn test_extend_codelist_empty_parent() {
+        let parent: Vec<String> = vec![];
+        let child = vec!["A".to_string(), "B".to_string()];
+
+        let result = extend_codelist(&parent, &child);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&"A".to_string()));
+        assert!(result.contains(&"B".to_string()));
+    }
+
+    #[test]
+    fn test_merge_preserves_child_inheritance() {
+        let parent = Schema::new("PARENT", "1.0");
+        let child = Schema::new("CHILD", "1.0").with_parent(SchemaRef::new("PARENT", "1.0"));
+
+        let merged = merge_schemas(&parent, &child);
+
+        assert!(merged.inheritance.parent.is_some());
+        assert_eq!(merged.inheritance.parent.unwrap().name, "PARENT");
+    }
+
+    #[test]
+    fn test_inheritance_error_display() {
+        let err = InheritanceError::CircularDependency("A -> B -> A".to_string());
+        assert_eq!(err.to_string(), "Circular dependency: A -> B -> A");
+
+        let err = InheritanceError::ParentNotFound("Parent".to_string());
+        assert_eq!(err.to_string(), "Parent not found: Parent");
+
+        let err = InheritanceError::InvalidOverride("Invalid".to_string());
+        assert_eq!(err.to_string(), "Invalid override: Invalid");
     }
 }
