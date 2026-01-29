@@ -6,6 +6,8 @@ use std::collections::HashMap;
 /// CSV schema defining structure and types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsvSchema {
+    /// Schema name/identifier
+    pub name: String,
     /// Column definitions in order
     pub columns: Vec<ColumnDef>,
     /// Whether the CSV has a header row
@@ -16,6 +18,8 @@ pub struct CsvSchema {
     pub quote_char: char,
     /// Mapping from IR field names to column indices
     pub field_mappings: HashMap<String, usize>,
+    /// Null value representation
+    pub null_value: Option<String>,
 }
 
 /// Definition of a CSV column
@@ -31,6 +35,16 @@ pub struct ColumnDef {
     pub default: Option<String>,
     /// IR field name mapping
     pub field_name: Option<String>,
+    /// Maximum length (for string types)
+    pub max_length: Option<usize>,
+    /// Minimum length (for string types)
+    pub min_length: Option<usize>,
+    /// Decimal precision (for decimal types)
+    pub precision: Option<u8>,
+    /// Decimal scale (for decimal types)
+    pub scale: Option<u8>,
+    /// Date/Time format string
+    pub format: Option<String>,
 }
 
 /// Supported column types
@@ -38,26 +52,44 @@ pub struct ColumnDef {
 pub enum ColumnType {
     /// String type
     String,
-    /// Integer type
+    /// Integer type (64-bit)
     Integer,
     /// Decimal/float type
     Decimal,
     /// Boolean type
     Boolean,
-    /// Date type
+    /// Date type (YYYY-MM-DD)
     Date,
-    /// DateTime type
+    /// DateTime type (ISO 8601)
     DateTime,
+    /// Time type (HH:MM:SS)
+    Time,
+}
+
+impl std::fmt::Display for ColumnType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ColumnType::String => write!(f, "string"),
+            ColumnType::Integer => write!(f, "integer"),
+            ColumnType::Decimal => write!(f, "decimal"),
+            ColumnType::Boolean => write!(f, "boolean"),
+            ColumnType::Date => write!(f, "date"),
+            ColumnType::DateTime => write!(f, "datetime"),
+            ColumnType::Time => write!(f, "time"),
+        }
+    }
 }
 
 impl Default for CsvSchema {
     fn default() -> Self {
         Self {
+            name: String::new(),
             columns: Vec::new(),
-            has_header: false,
+            has_header: true,
             delimiter: ',',
             quote_char: '"',
             field_mappings: HashMap::new(),
+            null_value: None,
         }
     }
 }
@@ -68,15 +100,41 @@ impl CsvSchema {
         Self::default()
     }
 
+    /// Create a schema with a name
+    pub fn with_name(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
     /// Create schema with header
     pub fn with_header(mut self) -> Self {
         self.has_header = true;
         self
     }
 
+    /// Create schema without header
+    pub fn without_header(mut self) -> Self {
+        self.has_header = false;
+        self
+    }
+
     /// Set delimiter character
     pub fn with_delimiter(mut self, delimiter: char) -> Self {
         self.delimiter = delimiter;
+        self
+    }
+
+    /// Set quote character
+    pub fn with_quote_char(mut self, quote_char: char) -> Self {
+        self.quote_char = quote_char;
+        self
+    }
+
+    /// Set null value representation
+    pub fn with_null_value(mut self, null_value: impl Into<String>) -> Self {
+        self.null_value = Some(null_value.into());
         self
     }
 
@@ -87,6 +145,8 @@ impl CsvSchema {
         if let Some(field) = &column.field_name {
             self.field_mappings.insert(field.clone(), index);
         }
+        // Also map by column name
+        self.field_mappings.insert(column.name.clone(), index);
         self
     }
 
@@ -110,16 +170,47 @@ impl CsvSchema {
         self.columns.iter().map(|c| c.name.as_str()).collect()
     }
 
+    /// Get the number of columns
+    pub fn column_count(&self) -> usize {
+        self.columns.len()
+    }
+
+    /// Check if the schema has any columns
+    pub fn is_empty(&self) -> bool {
+        self.columns.is_empty()
+    }
+
     /// Validate row data against schema
-    pub fn validate_row(&self, row: &[String]) -> Result<(), SchemaError> {
+    pub fn validate_row(&self, row: &[String]) -> Result<(), SchemaValidationError> {
         for (idx, col) in self.columns.iter().enumerate() {
             let value = row.get(idx).map(|s| s.as_str()).unwrap_or("");
 
             if col.required && value.is_empty() {
-                return Err(SchemaError::MissingRequiredField(col.name.clone()));
+                return Err(SchemaValidationError::MissingRequiredField(
+                    col.name.clone(),
+                ));
+            }
+
+            // Check min/max length for strings
+            if !value.is_empty() {
+                if let Some(max) = col.max_length {
+                    if value.len() > max {
+                        return Err(SchemaValidationError::InvalidLength {
+                            field: col.name.clone(),
+                            min: col.min_length.unwrap_or(0),
+                            max,
+                            actual: value.len(),
+                        });
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    /// Get the type for a column at the given index
+    pub fn get_column_type(&self, index: usize) -> Option<ColumnType> {
+        self.columns.get(index).map(|c| c.column_type)
     }
 }
 
@@ -132,6 +223,11 @@ impl ColumnDef {
             required: false,
             default: None,
             field_name: None,
+            max_length: None,
+            min_length: None,
+            precision: None,
+            scale: None,
+            format: None,
         }
     }
 
@@ -159,14 +255,69 @@ impl ColumnDef {
         self.field_name = Some(name.clone());
         self
     }
+
+    /// Set length constraints
+    pub fn with_length(mut self, min: usize, max: usize) -> Self {
+        self.min_length = Some(min);
+        self.max_length = Some(max);
+        self
+    }
+
+    /// Set maximum length
+    pub fn with_max_length(mut self, max: usize) -> Self {
+        self.max_length = Some(max);
+        self
+    }
+
+    /// Set decimal precision and scale
+    pub fn with_precision(mut self, precision: u8, scale: u8) -> Self {
+        self.precision = Some(precision);
+        self.scale = Some(scale);
+        self
+    }
+
+    /// Set format string (for dates/times)
+    pub fn with_format(mut self, format: impl Into<String>) -> Self {
+        self.format = Some(format.into());
+        self
+    }
 }
 
-/// Schema validation errors
+/// Schema validation errors (local to this module)
 #[derive(Debug, Clone, PartialEq)]
-pub enum SchemaError {
+pub enum SchemaValidationError {
     MissingRequiredField(String),
-    TypeMismatch(String, ColumnType),
+    InvalidLength {
+        field: String,
+        min: usize,
+        max: usize,
+        actual: usize,
+    },
 }
+
+impl std::fmt::Display for SchemaValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SchemaValidationError::MissingRequiredField(field) => {
+                write!(f, "Missing required field: {}", field)
+            }
+            SchemaValidationError::InvalidLength {
+                field,
+                min,
+                max,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "Invalid length for field {}: expected {}-{}, got {}",
+                    field, min, max, actual
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SchemaValidationError {}
 
 #[cfg(test)]
 mod tests {
@@ -195,6 +346,7 @@ mod tests {
             .add_column(ColumnDef::new("csv_age").mapped_to("ir_age"));
 
         assert_eq!(schema.get_column_index("ir_field_name"), Some(0));
+        assert_eq!(schema.get_column_index("csv_name"), Some(0)); // Also by column name
         assert_eq!(schema.get_column_index("ir_age"), Some(1));
         assert_eq!(schema.get_column_index("nonexistent"), None);
     }
@@ -224,10 +376,10 @@ mod tests {
 
         // Invalid row - missing required field
         let invalid_row = vec!["".to_string(), "data".to_string()];
-        assert_eq!(
+        assert!(matches!(
             schema.validate_row(&invalid_row),
-            Err(SchemaError::MissingRequiredField("id".to_string()))
-        );
+            Err(SchemaValidationError::MissingRequiredField(_))
+        ));
     }
 
     #[test]
@@ -264,5 +416,56 @@ mod tests {
         assert_eq!(age_col.column_type, ColumnType::Integer);
 
         assert!(schema.get_column("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_schema_with_name() {
+        let schema = CsvSchema::with_name("orders_csv");
+        assert_eq!(schema.name, "orders_csv");
+    }
+
+    #[test]
+    fn test_column_type_display() {
+        assert_eq!(ColumnType::String.to_string(), "string");
+        assert_eq!(ColumnType::Integer.to_string(), "integer");
+        assert_eq!(ColumnType::Decimal.to_string(), "decimal");
+        assert_eq!(ColumnType::Boolean.to_string(), "boolean");
+        assert_eq!(ColumnType::Date.to_string(), "date");
+        assert_eq!(ColumnType::DateTime.to_string(), "datetime");
+        assert_eq!(ColumnType::Time.to_string(), "time");
+    }
+
+    #[test]
+    fn test_column_constraints() {
+        let col = ColumnDef::new("code")
+            .with_length(1, 10)
+            .with_precision(10, 2)
+            .with_format("YYYY-MM-DD");
+
+        assert_eq!(col.min_length, Some(1));
+        assert_eq!(col.max_length, Some(10));
+        assert_eq!(col.precision, Some(10));
+        assert_eq!(col.scale, Some(2));
+        assert_eq!(col.format, Some("YYYY-MM-DD".to_string()));
+    }
+
+    #[test]
+    fn test_length_validation() {
+        let schema = CsvSchema::new().add_column(ColumnDef::new("code").with_max_length(5));
+
+        let valid_row = vec!["ABC".to_string()];
+        assert!(schema.validate_row(&valid_row).is_ok());
+
+        let invalid_row = vec!["ABCDEF".to_string()];
+        assert!(matches!(
+            schema.validate_row(&invalid_row),
+            Err(SchemaValidationError::InvalidLength { .. })
+        ));
+    }
+
+    #[test]
+    fn test_null_value() {
+        let schema = CsvSchema::new().with_null_value("NULL");
+        assert_eq!(schema.null_value, Some("NULL".to_string()));
     }
 }
