@@ -999,6 +999,668 @@ impl ControlNumberGenerator for MemoryControlNumberGenerator {
 }
 
 // ============================================================================
+// Envelope Validator
+// ============================================================================
+
+/// Type of envelope being validated
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvelopeType {
+    /// Interchange envelope (UNB/UNZ)
+    Interchange,
+    /// Message envelope (UNH/UNT)
+    Message,
+}
+
+impl std::fmt::Display for EnvelopeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnvelopeType::Interchange => write!(f, "Interchange"),
+            EnvelopeType::Message => write!(f, "Message"),
+        }
+    }
+}
+
+/// Kind of validation error
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// Missing header segment (UNB or UNH)
+    MissingHeader,
+    /// Missing trailer segment (UNZ or UNT)
+    MissingTrailer,
+    /// Control reference mismatch between header and trailer
+    MismatchedControlReference,
+    /// Incorrect segment count in UNT
+    IncorrectSegmentCount,
+    /// Incorrect message count in UNZ
+    IncorrectMessageCount,
+    /// Invalid syntax identifier in UNB
+    InvalidSyntaxIdentifier,
+    /// Invalid message type in UNH
+    InvalidMessageType,
+    /// Message outside of interchange
+    OrphanedMessage,
+    /// Segment outside of message
+    OrphanedSegment,
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorKind::MissingHeader => write!(f, "missing header"),
+            ErrorKind::MissingTrailer => write!(f, "missing trailer"),
+            ErrorKind::MismatchedControlReference => write!(f, "mismatched control reference"),
+            ErrorKind::IncorrectSegmentCount => write!(f, "incorrect segment count"),
+            ErrorKind::IncorrectMessageCount => write!(f, "incorrect message count"),
+            ErrorKind::InvalidSyntaxIdentifier => write!(f, "invalid syntax identifier"),
+            ErrorKind::InvalidMessageType => write!(f, "invalid message type"),
+            ErrorKind::OrphanedMessage => write!(f, "message outside of interchange"),
+            ErrorKind::OrphanedSegment => write!(f, "segment outside of message"),
+        }
+    }
+}
+
+/// Validation error with position information
+#[derive(Debug, Clone)]
+pub struct ValidationError {
+    /// Human-readable error message
+    pub message: String,
+    /// Type of envelope
+    pub envelope_type: EnvelopeType,
+    /// Position in source
+    pub position: Position,
+    /// Kind of error
+    pub error_kind: ErrorKind,
+    /// Expected value (if applicable)
+    pub expected: Option<String>,
+    /// Actual value (if applicable)
+    pub actual: Option<String>,
+}
+
+impl ValidationError {
+    /// Create a new validation error
+    pub fn new(
+        message: impl Into<String>,
+        envelope_type: EnvelopeType,
+        position: Position,
+        error_kind: ErrorKind,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            envelope_type,
+            position,
+            error_kind,
+            expected: None,
+            actual: None,
+        }
+    }
+
+    /// Add expected and actual values
+    pub fn with_values(mut self, expected: impl Into<String>, actual: impl Into<String>) -> Self {
+        self.expected = Some(expected.into());
+        self.actual = Some(actual.into());
+        self
+    }
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} validation error at line {}: {} (kind: {:?})",
+            self.envelope_type, self.position.line, self.message, self.error_kind
+        )?;
+        if let (Some(expected), Some(actual)) = (&self.expected, &self.actual) {
+            write!(f, " [expected: {}, actual: {}]", expected, actual)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+/// Validation warning (non-fatal)
+#[derive(Debug, Clone)]
+pub struct ValidationWarning {
+    /// Warning message
+    pub message: String,
+    /// Type of envelope
+    pub envelope_type: EnvelopeType,
+    /// Position in source
+    pub position: Position,
+}
+
+impl ValidationWarning {
+    /// Create a new validation warning
+    pub fn new(
+        message: impl Into<String>,
+        envelope_type: EnvelopeType,
+        position: Position,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            envelope_type,
+            position,
+        }
+    }
+}
+
+/// Validation report containing errors and warnings
+#[derive(Debug, Clone)]
+pub struct ValidationReport {
+    /// Whether the document is valid (no errors)
+    pub is_valid: bool,
+    /// List of validation errors
+    pub errors: Vec<ValidationError>,
+    /// List of validation warnings
+    pub warnings: Vec<ValidationWarning>,
+}
+
+impl Default for ValidationReport {
+    fn default() -> Self {
+        Self {
+            is_valid: true,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+impl ValidationReport {
+    /// Create a new empty validation report
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an error to the report
+    pub fn add_error(&mut self, error: ValidationError) {
+        self.errors.push(error);
+        self.is_valid = false;
+    }
+
+    /// Add a warning to the report
+    pub fn add_warning(&mut self, warning: ValidationWarning) {
+        self.warnings.push(warning);
+    }
+
+    /// Merge another report into this one
+    pub fn merge(&mut self, other: ValidationReport) {
+        self.errors.extend(other.errors);
+        self.warnings.extend(other.warnings);
+        self.is_valid = self.is_valid && other.is_valid;
+    }
+
+    /// Get the number of errors
+    pub fn error_count(&self) -> usize {
+        self.errors.len()
+    }
+
+    /// Get the number of warnings
+    pub fn warning_count(&self) -> usize {
+        self.warnings.len()
+    }
+}
+
+/// Document structure for validation
+///
+/// This represents a parsed EDIFACT document with interchange and message envelopes
+#[derive(Debug, Clone)]
+pub struct EdifactDocument {
+    /// Optional UNA segment
+    pub una: Option<UnaSegment>,
+    /// Interchange envelope (UNB/UNZ pair)
+    pub interchange: Option<InterchangeEnvelope>,
+}
+
+impl EdifactDocument {
+    /// Create a new empty document
+    pub fn new() -> Self {
+        Self {
+            una: None,
+            interchange: None,
+        }
+    }
+
+    /// Check if the document has an interchange envelope
+    pub fn has_interchange(&self) -> bool {
+        self.interchange.is_some()
+    }
+
+    /// Get the number of messages in the document
+    pub fn message_count(&self) -> usize {
+        self.interchange
+            .as_ref()
+            .map(|i| i.messages.len())
+            .unwrap_or(0)
+    }
+}
+
+impl Default for EdifactDocument {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Validator for EDIFACT envelope pairings
+///
+/// Validates that:
+/// - UNB/UNZ pairs match (control reference, message count)
+/// - UNH/UNT pairs match (message reference, segment count)
+/// - Messages are properly nested within interchanges
+/// - Segments are properly nested within messages
+#[derive(Debug, Clone, Default)]
+pub struct EnvelopeValidator;
+
+impl EnvelopeValidator {
+    /// Create a new envelope validator
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Validate all envelope pairings in a document
+    ///
+    /// This performs comprehensive validation of the entire document structure,
+    /// checking both interchange-level (UNB/UNZ) and message-level (UNH/UNT) pairings.
+    ///
+    /// # Arguments
+    /// * `document` - The EDIFACT document to validate
+    ///
+    /// # Returns
+    /// A `ValidationReport` containing all errors and warnings found
+    pub fn validate(
+        &self,
+        document: &EdifactDocument,
+    ) -> std::result::Result<ValidationReport, Error> {
+        let mut report = ValidationReport::new();
+
+        // Validate interchange level
+        if let Some(ref interchange) = document.interchange {
+            match self.validate_interchange(interchange) {
+                Ok(()) => {}
+                Err(e) => report.add_error(e),
+            }
+
+            // Validate each message
+            for (idx, message) in interchange.messages.iter().enumerate() {
+                match self.validate_message(message) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        let error = ValidationError::new(
+                            format!("Message {} validation failed: {}", idx + 1, e.message),
+                            EnvelopeType::Message,
+                            e.position,
+                            e.error_kind,
+                        )
+                        .with_values(e.expected.unwrap_or_default(), e.actual.unwrap_or_default());
+                        report.add_error(error);
+                    }
+                }
+            }
+        } else {
+            report.add_error(ValidationError::new(
+                "Missing interchange envelope (UNB)",
+                EnvelopeType::Interchange,
+                Position::default(),
+                ErrorKind::MissingHeader,
+            ));
+        }
+
+        Ok(report)
+    }
+
+    /// Validate UNB/UNZ pairing for an interchange
+    ///
+    /// Checks:
+    /// - UNZ exists
+    /// - Control references match
+    /// - Message count matches actual
+    pub fn validate_interchange(
+        &self,
+        interchange: &InterchangeEnvelope,
+    ) -> std::result::Result<(), ValidationError> {
+        // Check UNZ exists
+        let unz = interchange.unz.as_ref().ok_or_else(|| {
+            ValidationError::new(
+                "Missing UNZ segment (interchange trailer)",
+                EnvelopeType::Interchange,
+                Position::default(),
+                ErrorKind::MissingTrailer,
+            )
+        })?;
+
+        // Check control reference matching
+        if unz.control_ref != interchange.unb.control_ref {
+            return Err(ValidationError::new(
+                format!(
+                    "Interchange control reference mismatch: UNB='{}', UNZ='{}'",
+                    interchange.unb.control_ref, unz.control_ref
+                ),
+                EnvelopeType::Interchange,
+                Position::default(),
+                ErrorKind::MismatchedControlReference,
+            )
+            .with_values(&interchange.unb.control_ref, &unz.control_ref));
+        }
+
+        // Check message count
+        if unz.message_count != interchange.messages.len() {
+            return Err(ValidationError::new(
+                format!(
+                    "Message count mismatch: UNZ declares {}, actual count is {}",
+                    unz.message_count,
+                    interchange.messages.len()
+                ),
+                EnvelopeType::Interchange,
+                Position::default(),
+                ErrorKind::IncorrectMessageCount,
+            )
+            .with_values(
+                unz.message_count.to_string(),
+                interchange.messages.len().to_string(),
+            ));
+        }
+
+        // Validate syntax identifier
+        self.validate_syntax_identifier(&interchange.unb.syntax_identifier)?;
+
+        Ok(())
+    }
+
+    /// Validate UNH/UNT pairing for a message
+    ///
+    /// Checks:
+    /// - UNT exists
+    /// - Message references match
+    /// - Segment count matches actual
+    /// - Message type is valid
+    pub fn validate_message(
+        &self,
+        message: &MessageEnvelope,
+    ) -> std::result::Result<(), ValidationError> {
+        // Check UNT exists
+        let unt = message.unt.as_ref().ok_or_else(|| {
+            ValidationError::new(
+                format!(
+                    "Missing UNT segment for message '{}'(message trailer)",
+                    message.unh.message_ref
+                ),
+                EnvelopeType::Message,
+                Position::default(),
+                ErrorKind::MissingTrailer,
+            )
+        })?;
+
+        // Check message reference matching
+        if unt.message_ref != message.unh.message_ref {
+            return Err(ValidationError::new(
+                format!(
+                    "Message reference mismatch: UNH='{}', UNT='{}'",
+                    message.unh.message_ref, unt.message_ref
+                ),
+                EnvelopeType::Message,
+                Position::default(),
+                ErrorKind::MismatchedControlReference,
+            )
+            .with_values(&message.unh.message_ref, &unt.message_ref));
+        }
+
+        // Check segment count (including UNH and UNT)
+        let expected_count = message.segments.len() + 2; // +2 for UNH and UNT
+        if unt.segment_count != expected_count {
+            return Err(ValidationError::new(
+                format!(
+                    "Segment count mismatch: UNT declares {}, actual count is {} (including UNH/UNT)",
+                    unt.segment_count, expected_count
+                ),
+                EnvelopeType::Message,
+                Position::default(),
+                ErrorKind::IncorrectSegmentCount,
+            )
+            .with_values(
+                unt.segment_count.to_string(),
+                expected_count.to_string(),
+            ));
+        }
+
+        // Validate message type
+        self.validate_message_type(&message.unh.message_type)?;
+
+        Ok(())
+    }
+
+    /// Check control reference matches between header and trailer segments
+    ///
+    /// This is a lower-level method that works directly with Segment structs
+    /// for use during parsing.
+    pub fn check_control_reference(
+        &self,
+        header: &Segment,
+        trailer: &Segment,
+    ) -> std::result::Result<(), Error> {
+        // Extract control reference from header (UNB.0020 or UNH.0062)
+        let header_ref = match header.tag.as_str() {
+            "UNB" => header
+                .elements
+                .get(4)
+                .ok_or_else(|| Error::Envelope("UNB missing control reference element".to_string()))
+                .and_then(|e| match e {
+                    Element::Simple(v) => Ok(String::from_utf8_lossy(v).to_string()),
+                    Element::Composite(c) if !c.is_empty() => {
+                        Ok(String::from_utf8_lossy(&c[0]).to_string())
+                    }
+                    _ => Err(Error::Envelope(
+                        "UNB control reference has unexpected format".to_string(),
+                    )),
+                }),
+            "UNH" => header
+                .elements
+                .first()
+                .ok_or_else(|| Error::Envelope("UNH missing message reference element".to_string()))
+                .and_then(|e| match e {
+                    Element::Simple(v) => Ok(String::from_utf8_lossy(v).to_string()),
+                    Element::Composite(c) if !c.is_empty() => {
+                        Ok(String::from_utf8_lossy(&c[0]).to_string())
+                    }
+                    _ => Err(Error::Envelope(
+                        "UNH message reference has unexpected format".to_string(),
+                    )),
+                }),
+            _ => Err(Error::Envelope(format!(
+                "Unsupported header segment: {}",
+                header.tag
+            ))),
+        }?;
+
+        // Extract control reference from trailer (UNZ.0036 or UNT.0062)
+        let trailer_ref = match trailer.tag.as_str() {
+            "UNZ" => trailer
+                .elements
+                .get(1)
+                .ok_or_else(|| Error::Envelope("UNZ missing control reference element".to_string()))
+                .and_then(|e| match e {
+                    Element::Simple(v) => Ok(String::from_utf8_lossy(v).to_string()),
+                    Element::Composite(c) if !c.is_empty() => {
+                        Ok(String::from_utf8_lossy(&c[0]).to_string())
+                    }
+                    _ => Err(Error::Envelope(
+                        "UNZ control reference has unexpected format".to_string(),
+                    )),
+                }),
+            "UNT" => trailer
+                .elements
+                .get(1)
+                .ok_or_else(|| Error::Envelope("UNT missing message reference element".to_string()))
+                .and_then(|e| match e {
+                    Element::Simple(v) => Ok(String::from_utf8_lossy(v).to_string()),
+                    Element::Composite(c) if !c.is_empty() => {
+                        Ok(String::from_utf8_lossy(&c[0]).to_string())
+                    }
+                    _ => Err(Error::Envelope(
+                        "UNT message reference has unexpected format".to_string(),
+                    )),
+                }),
+            _ => Err(Error::Envelope(format!(
+                "Unsupported trailer segment: {}",
+                trailer.tag
+            ))),
+        }?;
+
+        if header_ref != trailer_ref {
+            return Err(Error::Envelope(format!(
+                "Control reference mismatch: header='{}', trailer='{}'",
+                header_ref, trailer_ref
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Check segment count matches in UNT segment
+    ///
+    /// This is a lower-level method that works with the message envelope
+    /// and a parsed UNT segment.
+    pub fn check_segment_count(
+        &self,
+        message: &MessageEnvelope,
+        trailer: &Segment,
+    ) -> std::result::Result<(), Error> {
+        if trailer.tag != "UNT" {
+            return Err(Error::Envelope(format!(
+                "Expected UNT segment, got {}",
+                trailer.tag
+            )));
+        }
+
+        // Extract declared segment count from UNT
+        let declared_count = trailer
+            .elements
+            .first()
+            .ok_or_else(|| Error::Envelope("UNT missing segment count element".to_string()))
+            .and_then(|e| match e {
+                Element::Simple(v) => {
+                    let s = String::from_utf8_lossy(v);
+                    s.parse::<usize>()
+                        .map_err(|_| Error::Envelope(format!("Invalid segment count: {}", s)))
+                }
+                Element::Composite(c) if !c.is_empty() => {
+                    let s = String::from_utf8_lossy(&c[0]);
+                    s.parse::<usize>()
+                        .map_err(|_| Error::Envelope(format!("Invalid segment count: {}", s)))
+                }
+                _ => Err(Error::Envelope(
+                    "UNT segment count has unexpected format".to_string(),
+                )),
+            })?;
+
+        // Calculate actual segment count (including UNH and UNT)
+        let actual_count = message.segments.len() + 2;
+
+        if declared_count != actual_count {
+            return Err(Error::Envelope(format!(
+                "Segment count mismatch: UNT declares {}, actual is {}",
+                declared_count, actual_count
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Validate syntax identifier
+    fn validate_syntax_identifier(
+        &self,
+        syntax: &SyntaxIdentifier,
+    ) -> std::result::Result<(), ValidationError> {
+        let valid_identifiers = [
+            "UNOA", "UNOB", "UNOC", "UNOD", "UNOE", "UNOF", "UNOG", "UNOH", "UNOI", "UNOJ", "UNOK",
+        ];
+
+        if !valid_identifiers.contains(&syntax.identifier.as_str()) {
+            return Err(ValidationError::new(
+                format!("Invalid syntax identifier: '{}'", syntax.identifier),
+                EnvelopeType::Interchange,
+                Position::default(),
+                ErrorKind::InvalidSyntaxIdentifier,
+            ));
+        }
+
+        // Validate version (typically 1-4)
+        if let Ok(version) = syntax.version.parse::<u8>() {
+            if version == 0 || version > 4 {
+                return Err(ValidationError::new(
+                    format!("Invalid syntax version: '{}'", syntax.version),
+                    EnvelopeType::Interchange,
+                    Position::default(),
+                    ErrorKind::InvalidSyntaxIdentifier,
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate message type identifier
+    fn validate_message_type(
+        &self,
+        msg_type: &MessageTypeIdentifier,
+    ) -> std::result::Result<(), ValidationError> {
+        // List of common EDIFACT/EANCOM message types
+        let valid_types = [
+            "ORDERS", "ORDRSP", "DESADV", "INVOIC", "SLSRPT", "PRICAT", "RECADV", "REMADV",
+            "INVRPT", "GENRAL", "CONTRL", "APERAK", "BANSTA", "HSTAT", "OSTENQ", "OSTRPT",
+            "PARTIN", "PRODAT", "PROINQ", "QALITY", "QUOTES", "REQOTE", "SANCRT", "CONITT",
+            "CONDRA", "CONQVY", "COPARN", "COPINO", "COPRAR", "COREOR", "COSHI", "COSMAT",
+            "COSTCO", "COSTOR", "CUSCAR", "CUSDEC", "CUSEXP", "CUSRES", "DEBADV", "DEBMUL",
+            "DELFOR", "DELJIT", "DESADV", "DGRECA", "DOCADV", "DOCAMA", "DOCAMI", "DOCAMR",
+            "DOCAPP", "FINPAY", "FINSTA", "GENRAL", "HANMOV", "ICASRP", "ICSOLI", "IFCSUM",
+            "IFTCCA", "IFTDGN", "IFTFCC", "IFTMAN", "IFTMBC", "IFTMBF", "IFTMBP", "IFTMCA",
+            "IFTMCS", "IFTMDG", "IFTMED", "IFTMFS", "IFTMMB", "IFTMRC", "IFTMRD", "IFTMVG",
+            "IFTSAI", "IFTSTA", "INSDES", "INSREQ", "INVOIC", "INVRPT", "IPPOAD", "IPPOMO",
+            "ITRRPT", "JAPRES", "JINFDE", "JOBAPP", "JOBCON", "JOBMOD", "JOBOFF", "MEDPID",
+            "MEDREQ", "MEDRPT", "MEQPOS", "MOVINS", "ORDCHG", "ORDERS", "ORDRSP", "OSTENQ",
+            "OSTRPT", "PARTIN", "PASREQ", "PASRPT", "PAXLST", "PAYEXT", "PAYMUL", "PAYORD",
+            "PRICAT", "PRODAT", "PRODEX", "PROINQ", "PROSRV", "QALITY", "QUOTES", "RDRMES",
+            "REBORD", "RECADV", "RECALC", "RECECO", "RECLAM", "REMADV", "REQDOC", "REQOTE",
+            "RESETT", "RESMSG", "RESRSP", "SANCRT", "SLSPRT", "SLSRPT", "SOCADE", "SSIMOD",
+            "STATAC", "SUPCOT", "SUPMAN", "SUPRES", "TANSTA", "TAXCON", "TIQREQ", "TIQRPT",
+            "VATDEC", "VESDEP", "WASDIS", "WKGRDC",
+        ];
+
+        let msg_type_upper = msg_type.message_type.to_uppercase();
+        if !valid_types.contains(&msg_type_upper.as_str()) {
+            // This is a warning, not an error - unknown message types might be valid
+            // in specific trading partner agreements
+            return Err(ValidationError::new(
+                format!(
+                    "Unknown message type: '{}' (may be valid for specific agreements)",
+                    msg_type.message_type
+                ),
+                EnvelopeType::Message,
+                Position::default(),
+                ErrorKind::InvalidMessageType,
+            ));
+        }
+
+        // Validate agency code
+        let valid_agencies = [
+            "UN", "EAN", "EDIFICE", "ODETTE", "VDA", "AIAG", "CEFIC", "ECR",
+        ];
+        if !valid_agencies.contains(&msg_type.agency.as_str()) {
+            // This is a warning for unknown agencies
+            return Err(ValidationError::new(
+                format!(
+                    "Unknown agency: '{}' (may be valid for specific agreements)",
+                    msg_type.agency
+                ),
+                EnvelopeType::Message,
+                Position::default(),
+                ErrorKind::InvalidMessageType,
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1745,5 +2407,744 @@ mod tests {
         assert_eq!(parsed.control_ref, unb.control_ref);
         assert_eq!(parsed.sender.id, unb.sender.id);
         assert_eq!(parsed.receiver.id, unb.receiver.id);
+    }
+
+    // ============================================================================
+    // EnvelopeValidator Tests
+    // ============================================================================
+
+    #[test]
+    fn test_valid_unb_unz_pairing() {
+        let validator = EnvelopeValidator::new();
+
+        let interchange = InterchangeEnvelope {
+            unb: UnbSegment {
+                syntax_identifier: SyntaxIdentifier::default(),
+                sender: PartyId::default(),
+                receiver: PartyId::default(),
+                datetime: DateTime::default(),
+                control_ref: "12345".to_string(),
+                application_ref: None,
+                priority: None,
+                ack_request: None,
+                comms_agreement_id: None,
+                test_indicator: None,
+            },
+            unz: Some(UnzSegment {
+                message_count: 1,
+                control_ref: "12345".to_string(),
+            }),
+            messages: vec![MessageEnvelope {
+                unh: UnhSegment {
+                    message_ref: "1".to_string(),
+                    message_type: MessageTypeIdentifier::default(),
+                    common_access_ref: None,
+                    transfer_status: None,
+                    subset_id: None,
+                    implementation_id: None,
+                    scenario_id: None,
+                },
+                unt: Some(UntSegment {
+                    segment_count: 5,
+                    message_ref: "1".to_string(),
+                }),
+                segments: vec![
+                    Segment {
+                        tag: "BGM".to_string(),
+                        elements: vec![],
+                        position: Position::default(),
+                    };
+                    3
+                ],
+            }],
+        };
+
+        assert!(validator.validate_interchange(&interchange).is_ok());
+    }
+
+    #[test]
+    fn test_mismatched_control_reference() {
+        let validator = EnvelopeValidator::new();
+
+        let interchange = InterchangeEnvelope {
+            unb: UnbSegment {
+                syntax_identifier: SyntaxIdentifier::default(),
+                sender: PartyId::default(),
+                receiver: PartyId::default(),
+                datetime: DateTime::default(),
+                control_ref: "12345".to_string(),
+                application_ref: None,
+                priority: None,
+                ack_request: None,
+                comms_agreement_id: None,
+                test_indicator: None,
+            },
+            unz: Some(UnzSegment {
+                message_count: 1,
+                control_ref: "54321".to_string(),
+            }),
+            messages: vec![],
+        };
+
+        let result = validator.validate_interchange(&interchange);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert_eq!(error.error_kind, ErrorKind::MismatchedControlReference);
+        assert_eq!(error.expected, Some("12345".to_string()));
+        assert_eq!(error.actual, Some("54321".to_string()));
+    }
+
+    #[test]
+    fn test_missing_unz() {
+        let validator = EnvelopeValidator::new();
+
+        let interchange = InterchangeEnvelope {
+            unb: UnbSegment {
+                syntax_identifier: SyntaxIdentifier::default(),
+                sender: PartyId::default(),
+                receiver: PartyId::default(),
+                datetime: DateTime::default(),
+                control_ref: "12345".to_string(),
+                application_ref: None,
+                priority: None,
+                ack_request: None,
+                comms_agreement_id: None,
+                test_indicator: None,
+            },
+            unz: None,
+            messages: vec![],
+        };
+
+        let result = validator.validate_interchange(&interchange);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert_eq!(error.error_kind, ErrorKind::MissingTrailer);
+    }
+
+    #[test]
+    fn test_incorrect_message_count() {
+        let validator = EnvelopeValidator::new();
+
+        let interchange = InterchangeEnvelope {
+            unb: UnbSegment {
+                syntax_identifier: SyntaxIdentifier::default(),
+                sender: PartyId::default(),
+                receiver: PartyId::default(),
+                datetime: DateTime::default(),
+                control_ref: "12345".to_string(),
+                application_ref: None,
+                priority: None,
+                ack_request: None,
+                comms_agreement_id: None,
+                test_indicator: None,
+            },
+            unz: Some(UnzSegment {
+                message_count: 5,
+                control_ref: "12345".to_string(),
+            }),
+            messages: vec![MessageEnvelope {
+                unh: UnhSegment {
+                    message_ref: "1".to_string(),
+                    message_type: MessageTypeIdentifier::default(),
+                    common_access_ref: None,
+                    transfer_status: None,
+                    subset_id: None,
+                    implementation_id: None,
+                    scenario_id: None,
+                },
+                unt: Some(UntSegment {
+                    segment_count: 2,
+                    message_ref: "1".to_string(),
+                }),
+                segments: vec![],
+            }],
+        };
+
+        let result = validator.validate_interchange(&interchange);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert_eq!(error.error_kind, ErrorKind::IncorrectMessageCount);
+        assert_eq!(error.expected, Some("5".to_string()));
+        assert_eq!(error.actual, Some("1".to_string()));
+    }
+
+    #[test]
+    fn test_valid_unh_unt_pairing() {
+        let validator = EnvelopeValidator::new();
+
+        let message = MessageEnvelope {
+            unh: UnhSegment {
+                message_ref: "MSG001".to_string(),
+                message_type: MessageTypeIdentifier::default(),
+                common_access_ref: None,
+                transfer_status: None,
+                subset_id: None,
+                implementation_id: None,
+                scenario_id: None,
+            },
+            unt: Some(UntSegment {
+                segment_count: 5,
+                message_ref: "MSG001".to_string(),
+            }),
+            segments: vec![
+                Segment {
+                    tag: "BGM".to_string(),
+                    elements: vec![],
+                    position: Position::default(),
+                };
+                3
+            ],
+        };
+
+        assert!(validator.validate_message(&message).is_ok());
+    }
+
+    #[test]
+    fn test_mismatched_message_reference() {
+        let validator = EnvelopeValidator::new();
+
+        let message = MessageEnvelope {
+            unh: UnhSegment {
+                message_ref: "MSG001".to_string(),
+                message_type: MessageTypeIdentifier::default(),
+                common_access_ref: None,
+                transfer_status: None,
+                subset_id: None,
+                implementation_id: None,
+                scenario_id: None,
+            },
+            unt: Some(UntSegment {
+                segment_count: 2,
+                message_ref: "MSG002".to_string(),
+            }),
+            segments: vec![],
+        };
+
+        let result = validator.validate_message(&message);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert_eq!(error.error_kind, ErrorKind::MismatchedControlReference);
+        assert_eq!(error.expected, Some("MSG001".to_string()));
+        assert_eq!(error.actual, Some("MSG002".to_string()));
+    }
+
+    #[test]
+    fn test_incorrect_segment_count() {
+        let validator = EnvelopeValidator::new();
+
+        let message = MessageEnvelope {
+            unh: UnhSegment {
+                message_ref: "1".to_string(),
+                message_type: MessageTypeIdentifier::default(),
+                common_access_ref: None,
+                transfer_status: None,
+                subset_id: None,
+                implementation_id: None,
+                scenario_id: None,
+            },
+            unt: Some(UntSegment {
+                segment_count: 10,
+                message_ref: "1".to_string(),
+            }),
+            segments: vec![
+                Segment {
+                    tag: "BGM".to_string(),
+                    elements: vec![],
+                    position: Position::default(),
+                };
+                3
+            ],
+        };
+
+        let result = validator.validate_message(&message);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert_eq!(error.error_kind, ErrorKind::IncorrectSegmentCount);
+        // Expected 10, actual is 5 (3 segments + UNH + UNT)
+        assert_eq!(error.expected, Some("10".to_string()));
+        assert_eq!(error.actual, Some("5".to_string()));
+    }
+
+    #[test]
+    fn test_missing_unt() {
+        let validator = EnvelopeValidator::new();
+
+        let message = MessageEnvelope {
+            unh: UnhSegment {
+                message_ref: "1".to_string(),
+                message_type: MessageTypeIdentifier::default(),
+                common_access_ref: None,
+                transfer_status: None,
+                subset_id: None,
+                implementation_id: None,
+                scenario_id: None,
+            },
+            unt: None,
+            segments: vec![],
+        };
+
+        let result = validator.validate_message(&message);
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert_eq!(error.error_kind, ErrorKind::MissingTrailer);
+    }
+
+    #[test]
+    fn test_full_document_validation() {
+        let validator = EnvelopeValidator::new();
+
+        let document = EdifactDocument {
+            una: None,
+            interchange: Some(InterchangeEnvelope {
+                unb: UnbSegment {
+                    syntax_identifier: SyntaxIdentifier::default(),
+                    sender: PartyId::default(),
+                    receiver: PartyId::default(),
+                    datetime: DateTime::default(),
+                    control_ref: "INTERCHANGE001".to_string(),
+                    application_ref: None,
+                    priority: None,
+                    ack_request: None,
+                    comms_agreement_id: None,
+                    test_indicator: None,
+                },
+                unz: Some(UnzSegment {
+                    message_count: 2,
+                    control_ref: "INTERCHANGE001".to_string(),
+                }),
+                messages: vec![
+                    MessageEnvelope {
+                        unh: UnhSegment {
+                            message_ref: "1".to_string(),
+                            message_type: MessageTypeIdentifier::default(),
+                            common_access_ref: None,
+                            transfer_status: None,
+                            subset_id: None,
+                            implementation_id: None,
+                            scenario_id: None,
+                        },
+                        unt: Some(UntSegment {
+                            segment_count: 5,
+                            message_ref: "1".to_string(),
+                        }),
+                        segments: vec![
+                            Segment {
+                                tag: "BGM".to_string(),
+                                elements: vec![],
+                                position: Position::default(),
+                            };
+                            3
+                        ],
+                    },
+                    MessageEnvelope {
+                        unh: UnhSegment {
+                            message_ref: "2".to_string(),
+                            message_type: MessageTypeIdentifier {
+                                message_type: "DESADV".to_string(),
+                                ..Default::default()
+                            },
+                            common_access_ref: None,
+                            transfer_status: None,
+                            subset_id: None,
+                            implementation_id: None,
+                            scenario_id: None,
+                        },
+                        unt: Some(UntSegment {
+                            segment_count: 4,
+                            message_ref: "2".to_string(),
+                        }),
+                        segments: vec![
+                            Segment {
+                                tag: "BGM".to_string(),
+                                elements: vec![],
+                                position: Position::default(),
+                            };
+                            2
+                        ],
+                    },
+                ],
+            }),
+        };
+
+        let report = validator.validate(&document).unwrap();
+        assert!(report.is_valid);
+        assert_eq!(report.error_count(), 0);
+        assert_eq!(report.warning_count(), 0);
+    }
+
+    #[test]
+    fn test_document_validation_with_errors() {
+        let validator = EnvelopeValidator::new();
+
+        let document = EdifactDocument {
+            una: None,
+            interchange: Some(InterchangeEnvelope {
+                unb: UnbSegment {
+                    syntax_identifier: SyntaxIdentifier::default(),
+                    sender: PartyId::default(),
+                    receiver: PartyId::default(),
+                    datetime: DateTime::default(),
+                    control_ref: "INTERCHANGE001".to_string(),
+                    application_ref: None,
+                    priority: None,
+                    ack_request: None,
+                    comms_agreement_id: None,
+                    test_indicator: None,
+                },
+                unz: Some(UnzSegment {
+                    message_count: 1,
+                    control_ref: "WRONG_REF".to_string(), // Mismatched!
+                }),
+                messages: vec![MessageEnvelope {
+                    unh: UnhSegment {
+                        message_ref: "1".to_string(),
+                        message_type: MessageTypeIdentifier::default(),
+                        common_access_ref: None,
+                        transfer_status: None,
+                        subset_id: None,
+                        implementation_id: None,
+                        scenario_id: None,
+                    },
+                    unt: Some(UntSegment {
+                        segment_count: 100, // Wrong count
+                        message_ref: "1".to_string(),
+                    }),
+                    segments: vec![
+                        Segment {
+                            tag: "BGM".to_string(),
+                            elements: vec![],
+                            position: Position::default(),
+                        };
+                        3
+                    ],
+                }],
+            }),
+        };
+
+        let report = validator.validate(&document).unwrap();
+        assert!(!report.is_valid);
+        assert_eq!(report.error_count(), 2); // Interchange ref mismatch + segment count mismatch
+    }
+
+    #[test]
+    fn test_document_without_interchange() {
+        let validator = EnvelopeValidator::new();
+
+        let document = EdifactDocument {
+            una: None,
+            interchange: None,
+        };
+
+        let report = validator.validate(&document).unwrap();
+        assert!(!report.is_valid);
+        assert_eq!(report.error_count(), 1);
+        assert_eq!(report.errors[0].error_kind, ErrorKind::MissingHeader);
+    }
+
+    #[test]
+    fn test_check_control_reference_unb_unz() {
+        let validator = EnvelopeValidator::new();
+
+        let unb = Segment {
+            tag: "UNB".to_string(),
+            elements: vec![
+                Element::Composite(vec![b"UNOA".to_vec(), b"3".to_vec()]),
+                Element::Composite(vec![b"SENDER".to_vec()]),
+                Element::Composite(vec![b"RECEIVER".to_vec()]),
+                Element::Composite(vec![b"200101".to_vec(), b"1200".to_vec()]),
+                Element::Simple(b"REF123".to_vec()),
+            ],
+            position: Position::default(),
+        };
+
+        let unz = Segment {
+            tag: "UNZ".to_string(),
+            elements: vec![
+                Element::Simple(b"1".to_vec()),
+                Element::Simple(b"REF123".to_vec()),
+            ],
+            position: Position::default(),
+        };
+
+        assert!(validator.check_control_reference(&unb, &unz).is_ok());
+    }
+
+    #[test]
+    fn test_check_control_reference_mismatch() {
+        let validator = EnvelopeValidator::new();
+
+        let unb = Segment {
+            tag: "UNB".to_string(),
+            elements: vec![
+                Element::Composite(vec![b"UNOA".to_vec(), b"3".to_vec()]),
+                Element::Composite(vec![b"SENDER".to_vec()]),
+                Element::Composite(vec![b"RECEIVER".to_vec()]),
+                Element::Composite(vec![b"200101".to_vec(), b"1200".to_vec()]),
+                Element::Simple(b"REF123".to_vec()),
+            ],
+            position: Position::default(),
+        };
+
+        let unz = Segment {
+            tag: "UNZ".to_string(),
+            elements: vec![
+                Element::Simple(b"1".to_vec()),
+                Element::Simple(b"WRONG".to_vec()),
+            ],
+            position: Position::default(),
+        };
+
+        let result = validator.check_control_reference(&unb, &unz);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("mismatch"));
+    }
+
+    #[test]
+    fn test_check_control_reference_unh_unt() {
+        let validator = EnvelopeValidator::new();
+
+        let unh = Segment {
+            tag: "UNH".to_string(),
+            elements: vec![
+                Element::Simple(b"MSG001".to_vec()),
+                Element::Composite(vec![
+                    b"ORDERS".to_vec(),
+                    b"D".to_vec(),
+                    b"96A".to_vec(),
+                    b"UN".to_vec(),
+                ]),
+            ],
+            position: Position::default(),
+        };
+
+        let unt = Segment {
+            tag: "UNT".to_string(),
+            elements: vec![
+                Element::Simple(b"5".to_vec()),
+                Element::Simple(b"MSG001".to_vec()),
+            ],
+            position: Position::default(),
+        };
+
+        assert!(validator.check_control_reference(&unh, &unt).is_ok());
+    }
+
+    #[test]
+    fn test_check_segment_count() {
+        let validator = EnvelopeValidator::new();
+
+        let message = MessageEnvelope {
+            unh: UnhSegment {
+                message_ref: "1".to_string(),
+                message_type: MessageTypeIdentifier::default(),
+                common_access_ref: None,
+                transfer_status: None,
+                subset_id: None,
+                implementation_id: None,
+                scenario_id: None,
+            },
+            unt: None,
+            segments: vec![
+                Segment {
+                    tag: "BGM".to_string(),
+                    elements: vec![],
+                    position: Position::default(),
+                };
+                3
+            ],
+        };
+
+        // 3 segments + UNH + UNT = 5
+        let unt_segment = Segment {
+            tag: "UNT".to_string(),
+            elements: vec![
+                Element::Simple(b"5".to_vec()),
+                Element::Simple(b"1".to_vec()),
+            ],
+            position: Position::default(),
+        };
+
+        assert!(validator
+            .check_segment_count(&message, &unt_segment)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_check_segment_count_mismatch() {
+        let validator = EnvelopeValidator::new();
+
+        let message = MessageEnvelope {
+            unh: UnhSegment {
+                message_ref: "1".to_string(),
+                message_type: MessageTypeIdentifier::default(),
+                common_access_ref: None,
+                transfer_status: None,
+                subset_id: None,
+                implementation_id: None,
+                scenario_id: None,
+            },
+            unt: None,
+            segments: vec![
+                Segment {
+                    tag: "BGM".to_string(),
+                    elements: vec![],
+                    position: Position::default(),
+                };
+                3
+            ],
+        };
+
+        // Wrong count: should be 5 but we say 10
+        let unt_segment = Segment {
+            tag: "UNT".to_string(),
+            elements: vec![
+                Element::Simple(b"10".to_vec()),
+                Element::Simple(b"1".to_vec()),
+            ],
+            position: Position::default(),
+        };
+
+        let result = validator.check_segment_count(&message, &unt_segment);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("mismatch"));
+    }
+
+    #[test]
+    fn test_invalid_syntax_identifier() {
+        let validator = EnvelopeValidator::new();
+
+        let interchange = InterchangeEnvelope {
+            unb: UnbSegment {
+                syntax_identifier: SyntaxIdentifier {
+                    identifier: "INVALID".to_string(),
+                    version: "3".to_string(),
+                    service_code_list: None,
+                    encoding: None,
+                },
+                sender: PartyId::default(),
+                receiver: PartyId::default(),
+                datetime: DateTime::default(),
+                control_ref: "12345".to_string(),
+                application_ref: None,
+                priority: None,
+                ack_request: None,
+                comms_agreement_id: None,
+                test_indicator: None,
+            },
+            unz: Some(UnzSegment {
+                message_count: 0,
+                control_ref: "12345".to_string(),
+            }),
+            messages: vec![],
+        };
+
+        let result = validator.validate_interchange(&interchange);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().error_kind,
+            ErrorKind::InvalidSyntaxIdentifier
+        );
+    }
+
+    #[test]
+    fn test_validation_report_merge() {
+        let mut report1 = ValidationReport::new();
+        report1.add_error(ValidationError::new(
+            "Error 1",
+            EnvelopeType::Interchange,
+            Position::default(),
+            ErrorKind::MissingHeader,
+        ));
+        report1.add_warning(ValidationWarning::new(
+            "Warning 1",
+            EnvelopeType::Message,
+            Position::default(),
+        ));
+
+        let mut report2 = ValidationReport::new();
+        report2.add_error(ValidationError::new(
+            "Error 2",
+            EnvelopeType::Message,
+            Position::default(),
+            ErrorKind::MissingTrailer,
+        ));
+
+        report1.merge(report2);
+
+        assert!(!report1.is_valid);
+        assert_eq!(report1.error_count(), 2);
+        assert_eq!(report1.warning_count(), 1);
+    }
+
+    #[test]
+    fn test_edifact_document_helpers() {
+        let doc = EdifactDocument::new();
+        assert!(!doc.has_interchange());
+        assert_eq!(doc.message_count(), 0);
+
+        let doc_with_interchange = EdifactDocument {
+            una: None,
+            interchange: Some(InterchangeEnvelope {
+                unb: UnbSegment {
+                    syntax_identifier: SyntaxIdentifier::default(),
+                    sender: PartyId::default(),
+                    receiver: PartyId::default(),
+                    datetime: DateTime::default(),
+                    control_ref: "12345".to_string(),
+                    application_ref: None,
+                    priority: None,
+                    ack_request: None,
+                    comms_agreement_id: None,
+                    test_indicator: None,
+                },
+                unz: Some(UnzSegment {
+                    message_count: 2,
+                    control_ref: "12345".to_string(),
+                }),
+                messages: vec![
+                    MessageEnvelope {
+                        unh: UnhSegment {
+                            message_ref: "1".to_string(),
+                            message_type: MessageTypeIdentifier::default(),
+                            common_access_ref: None,
+                            transfer_status: None,
+                            subset_id: None,
+                            implementation_id: None,
+                            scenario_id: None,
+                        },
+                        unt: Some(UntSegment {
+                            segment_count: 2,
+                            message_ref: "1".to_string(),
+                        }),
+                        segments: vec![],
+                    },
+                    MessageEnvelope {
+                        unh: UnhSegment {
+                            message_ref: "2".to_string(),
+                            message_type: MessageTypeIdentifier::default(),
+                            common_access_ref: None,
+                            transfer_status: None,
+                            subset_id: None,
+                            implementation_id: None,
+                            scenario_id: None,
+                        },
+                        unt: Some(UntSegment {
+                            segment_count: 2,
+                            message_ref: "2".to_string(),
+                        }),
+                        segments: vec![],
+                    },
+                ],
+            }),
+        };
+
+        assert!(doc_with_interchange.has_interchange());
+        assert_eq!(doc_with_interchange.message_count(), 2);
     }
 }

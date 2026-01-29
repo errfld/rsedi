@@ -10,6 +10,10 @@ pub mod parser;
 pub mod serializer;
 pub mod syntax;
 
+pub use envelopes::{
+    EdifactDocument, EnvelopeType, EnvelopeValidator, ErrorKind, ValidationError, ValidationReport,
+    ValidationWarning,
+};
 pub use parser::EdifactParser;
 pub use serializer::EdifactSerializer;
 
