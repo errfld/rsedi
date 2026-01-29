@@ -209,14 +209,12 @@ pub fn transform_number_format(
 fn format_with_thousands_sep(n: i64, sep: &str) -> String {
     let s = n.to_string();
     let mut result = String::new();
-    let mut count = 0;
 
-    for c in s.chars().rev() {
+    for (count, c) in s.chars().rev().enumerate() {
         if count > 0 && count % 3 == 0 && c != '-' {
             result.push_str(sep);
         }
         result.push(c);
-        count += 1;
     }
 
     result.chars().rev().collect()
@@ -433,21 +431,21 @@ mod tests {
 
     // Date format tests
     #[test]
-    fn test_transform_date_format_YYYYMMDD_to_ISO() {
+    fn test_transform_date_format_yyyymmdd_to_iso() {
         let value = Value::String("20240115".to_string());
         let result = transform_date_format(&value, "YYYYMMDD", "YYYY-MM-DD").unwrap();
         assert_eq!(result, Value::Date("2024-01-15".to_string()));
     }
 
     #[test]
-    fn test_transform_date_format_DDMMYYYY_to_YYYYMMDD() {
+    fn test_transform_date_format_ddmmyyyy_to_yyyymmdd() {
         let value = Value::String("15012024".to_string());
         let result = transform_date_format(&value, "DDMMYYYY", "YYYYMMDD").unwrap();
         assert_eq!(result, Value::Date("20240115".to_string()));
     }
 
     #[test]
-    fn test_transform_date_format_ISO_to_DDMMYYYY() {
+    fn test_transform_date_format_iso_to_ddmmyyyy() {
         let value = Value::Date("2024-12-25".to_string());
         let result = transform_date_format(&value, "YYYY-MM-DD", "DDMMYYYY").unwrap();
         assert_eq!(result, Value::Date("25122024".to_string()));
@@ -837,7 +835,7 @@ mod tests {
 
     #[test]
     fn test_transform_number_format_many_decimals() {
-        let value = Value::Decimal(3.14159265359);
+        let value = Value::Decimal(std::f64::consts::PI);
         let result = transform_number_format(&value, 6, None).unwrap();
         assert_eq!(result, Value::String("3.141593".to_string()));
     }

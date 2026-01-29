@@ -2,12 +2,12 @@
 //!
 //! Tests custom extension registration and invocation.
 
-use edi_ir::{Document, Node, NodeType, Value};
+use edi_ir::Value;
 use edi_mapping::{
     extensions::{
         create_math_utils_extension, create_string_utils_extension, Extension, ExtensionRegistry,
     },
-    MappingDsl, MappingRuntime,
+    MappingRuntime,
 };
 
 #[test]
@@ -221,7 +221,7 @@ fn test_extension_with_runtime() {
     registry.register(ext).unwrap();
 
     // Create runtime with extensions
-    let mut runtime = MappingRuntime::with_extensions(registry);
+    let runtime = MappingRuntime::with_extensions(registry);
 
     // Use extension through runtime
     let result = runtime
@@ -379,7 +379,11 @@ fn test_extension_with_various_types() {
 
     assert_eq!(
         registry
-            .call("type_test", "type_checker", &[Value::Decimal(3.14)])
+            .call(
+                "type_test",
+                "type_checker",
+                &[Value::Decimal(std::f64::consts::PI)]
+            )
             .unwrap(),
         Value::String("decimal".to_string())
     );

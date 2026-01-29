@@ -446,7 +446,7 @@ rules:
     let result1 = runtime.execute(&mapping, &Document::new(root1)).unwrap();
     // Check that the condition matched and produced output
     assert!(
-        result1.root.children.len() > 0 || result1.root.name != "OUTPUT",
+        !result1.root.children.is_empty() || result1.root.name != "OUTPUT",
         "Condition should have matched and produced output"
     );
 

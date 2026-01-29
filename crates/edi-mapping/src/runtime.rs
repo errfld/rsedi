@@ -291,10 +291,9 @@ impl MappingRuntime {
         }
 
         // Handle absolute paths
-        if path.starts_with('/') {
+        if let Some(relative_path) = path.strip_prefix('/') {
             // For now, treat as relative from current node
             // In full implementation, would traverse from root
-            let relative_path = &path[1..];
             return self.resolve_path(node, relative_path);
         }
 
@@ -330,8 +329,7 @@ impl MappingRuntime {
 
     /// Find a collection of nodes
     fn find_collection(&self, node: &Node, path: &str) -> crate::Result<Vec<Node>> {
-        if path.starts_with('/') {
-            let relative_path = &path[1..];
+        if let Some(relative_path) = path.strip_prefix('/') {
             return self.find_collection(node, relative_path);
         }
 

@@ -290,7 +290,7 @@ fn test_orders_to_csv_mapping() {
     // Verify basic structure - mapping should have produced output
     // Structure depends on implementation: first field becomes root, others children
     assert!(
-        result.root.children.len() > 0 || result.root.name != "OUTPUT",
+        !result.root.children.is_empty() || result.root.name != "OUTPUT",
         "Mapping should have produced output"
     );
 
@@ -397,7 +397,7 @@ rules:
     assert_eq!(result.root.name, "items");
     // Note: Implementation processes items - structure depends on foreach execution
     assert!(
-        result.root.children.len() > 0,
+        !result.root.children.is_empty(),
         "Should have processed at least one item"
     );
 }
