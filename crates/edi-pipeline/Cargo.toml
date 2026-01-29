@@ -18,3 +18,4 @@ tokio = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+tempfile = "3"
