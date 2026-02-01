@@ -300,17 +300,8 @@ impl ValidationEngine {
         self.validate_node(&doc.root, &mut result, &context);
 
         // Collect all segments for rule validation
-        let segments: Vec<&Node> = doc
-            .root
-            .children
-            .iter()
-            .filter(|c| {
-                matches!(
-                    c.node_type,
-                    NodeType::Segment | NodeType::Interchange | NodeType::Message
-                )
-            })
-            .collect();
+        let mut segments = Vec::new();
+        self.collect_segments(&doc.root, &mut segments);
 
         // Validate segment order if rules are defined
         if let Some(rules) = self.segment_order_rules.get("") {
@@ -602,17 +593,8 @@ impl ValidationEngine {
         context: &ValidationContext,
     ) -> crate::Result<()> {
         // Collect all segments from the document
-        let segments: Vec<&Node> = doc
-            .root
-            .children
-            .iter()
-            .filter(|c| {
-                matches!(
-                    c.node_type,
-                    NodeType::Segment | NodeType::Interchange | NodeType::Message
-                )
-            })
-            .collect();
+        let mut segments = Vec::new();
+        self.collect_segments(&doc.root, &mut segments);
 
         // Validate segment order if rules are defined
         if let Some(rules) = self.segment_order_rules.get("") {
@@ -712,6 +694,19 @@ impl ValidationEngine {
                     self.validate_node(child, result, &child_context);
                 }
             }
+        }
+    }
+
+    fn collect_segments<'a>(&self, node: &'a Node, segments: &mut Vec<&'a Node>) {
+        if matches!(
+            node.node_type,
+            NodeType::Segment | NodeType::Interchange | NodeType::Message
+        ) {
+            segments.push(node);
+        }
+
+        for child in &node.children {
+            self.collect_segments(child, segments);
         }
     }
 
@@ -909,6 +904,22 @@ mod tests {
         ));
 
         root.add_child(segment);
+        Document::new(root)
+    }
+
+    fn create_grouped_document() -> Document {
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut group = Node::new("SG1", NodeType::SegmentGroup);
+        let mut segment = Node::new("TEST", NodeType::Segment);
+
+        segment.add_child(Node::with_value(
+            "FIELD1",
+            NodeType::Element,
+            Value::String("value1".to_string()),
+        ));
+
+        group.add_child(segment);
+        root.add_child(group);
         Document::new(root)
     }
 
@@ -1206,6 +1217,17 @@ mod tests {
         // Document should validate against schema
         // Note: may have warnings about unknown segments
         assert!(result.is_valid || result.has_errors());
+    }
+
+    #[test]
+    fn test_validate_with_schema_segment_group_traversal() {
+        let doc = create_grouped_document();
+        let schema = create_test_schema();
+        let engine = ValidationEngine::new();
+
+        let result = engine.validate_with_schema(&doc, &schema).unwrap();
+
+        assert!(result.is_valid, "Expected grouped segment to be validated");
     }
 
     #[test]
