@@ -199,12 +199,28 @@ impl<'a> SyntaxBuffer<'a> {
         let mut line = 1;
         let mut col = 1;
 
-        for i in 0..self.pos.min(self.data.len()) {
-            if self.data[i] == b'\n' {
-                line += 1;
-                col = 1;
-            } else {
-                col += 1;
+        let limit = self.pos.min(self.data.len());
+        let mut i = 0;
+        while i < limit {
+            match self.data[i] {
+                b'\n' => {
+                    line += 1;
+                    col = 1;
+                    i += 1;
+                }
+                b'\r' => {
+                    line += 1;
+                    col = 1;
+                    if i + 1 < limit && self.data[i + 1] == b'\n' {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                _ => {
+                    col += 1;
+                    i += 1;
+                }
             }
         }
 
@@ -391,5 +407,35 @@ mod tests {
             tag.is_none(),
             "Should return None when less than 3 bytes available"
         );
+    }
+
+    #[test]
+    fn test_line_column_crlf_counts_as_single_newline() {
+        let data = b"ABC\r\nDEF";
+        let mut buf = SyntaxBuffer::new(data);
+
+        buf.pos = 5;
+        assert_eq!(buf.line_column(), (2, 1));
+
+        buf.pos = 6;
+        assert_eq!(buf.line_column(), (2, 2));
+    }
+
+    #[test]
+    fn test_line_column_cr_resets_column() {
+        let data = b"ABC\rDEF";
+        let mut buf = SyntaxBuffer::new(data);
+
+        buf.pos = 4;
+        assert_eq!(buf.line_column(), (2, 1));
+    }
+
+    #[test]
+    fn test_line_column_lf_resets_column() {
+        let data = b"A\nB";
+        let mut buf = SyntaxBuffer::new(data);
+
+        buf.pos = 2;
+        assert_eq!(buf.line_column(), (2, 1));
     }
 }
