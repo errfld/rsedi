@@ -347,41 +347,105 @@ impl EdifactParser {
 
         let message_segments = &segments[unh_pos..=unt_pos];
 
+        let (message_type, version, message_ref) = Self::message_info(message_segments);
+
         // Build document root
         let mut root = Node::new("MESSAGE", NodeType::Message);
 
-        for segment in message_segments {
-            root.add_child(segment.to_node());
+        let children = if message_type.as_deref() == Some("ORDERS") {
+            Self::group_orders(message_segments)
+        } else {
+            message_segments
+                .iter()
+                .map(Segment::to_node)
+                .collect::<Vec<_>>()
+        };
+
+        for child in children {
+            root.add_child(child);
         }
 
         let mut metadata = DocumentMetadata::default();
 
-        // Extract message type from UNH
-        // UNH structure: +message_reference+message_type:version:release:agency'
-        if let Some(unh) = segments.iter().find(|s| s.tag == "UNH") {
-            // Message type is in the first component of the second element (composite)
-            if let Some(Element::Composite(ref msg_id)) = unh.elements.get(1) {
-                if !msg_id.is_empty() {
-                    let type_str = String::from_utf8_lossy(&msg_id[0]);
-                    metadata.doc_type = Some(type_str.to_string());
-                    let version_str = msg_id.get(1).map(|v| String::from_utf8_lossy(v));
-                    let release_str = msg_id.get(2).map(|r| String::from_utf8_lossy(r));
-                    metadata.version = match (version_str, release_str) {
-                        (Some(v), Some(r)) => Some(format!("{}_{}", v, r)),
-                        (Some(v), None) => Some(v.to_string()),
-                        _ => None,
-                    };
-                }
-            }
-            // Also store message reference
-            if let Some(Element::Simple(ref msg_ref)) = unh.elements.first() {
-                metadata
-                    .message_refs
-                    .push(String::from_utf8_lossy(msg_ref).to_string());
-            }
+        metadata.doc_type = message_type;
+        metadata.version = version;
+        if let Some(message_ref) = message_ref {
+            metadata.message_refs.push(message_ref);
         }
 
         Some(Document::with_metadata(root, metadata))
+    }
+
+    fn message_info(segments: &[Segment]) -> (Option<String>, Option<String>, Option<String>) {
+        let mut message_type = None;
+        let mut version = None;
+        let mut message_ref = None;
+
+        if let Some(unh) = segments.iter().find(|s| s.tag == "UNH") {
+            // UNH structure: +message_reference+message_type:version:release:agency'
+            if let Some(Element::Composite(ref msg_id)) = unh.elements.get(1) {
+                if let Some(type_component) = msg_id.first() {
+                    message_type = Some(String::from_utf8_lossy(type_component).to_string());
+                }
+
+                let version_str = msg_id
+                    .get(1)
+                    .map(|v| String::from_utf8_lossy(v).to_string());
+                let release_str = msg_id
+                    .get(2)
+                    .map(|r| String::from_utf8_lossy(r).to_string());
+
+                version = match (version_str, release_str) {
+                    (Some(v), Some(r)) => Some(format!("{}_{}", v, r)),
+                    (Some(v), None) => Some(v),
+                    _ => None,
+                };
+            }
+
+            if let Some(Element::Simple(ref msg_ref)) = unh.elements.first() {
+                message_ref = Some(String::from_utf8_lossy(msg_ref).to_string());
+            }
+        }
+
+        (message_type, version, message_ref)
+    }
+
+    fn group_orders(segments: &[Segment]) -> Vec<Node> {
+        let mut children = Vec::new();
+        let mut current_group: Option<Node> = None;
+
+        for segment in segments {
+            match segment.tag.as_str() {
+                "LIN" => {
+                    if let Some(group) = current_group.take() {
+                        children.push(group);
+                    }
+
+                    let mut group = Node::new("LINE_ITEM", NodeType::SegmentGroup);
+                    group.add_child(segment.to_node());
+                    current_group = Some(group);
+                }
+                "UNS" | "UNT" => {
+                    if let Some(group) = current_group.take() {
+                        children.push(group);
+                    }
+                    children.push(segment.to_node());
+                }
+                _ => {
+                    if let Some(group) = current_group.as_mut() {
+                        group.add_child(segment.to_node());
+                    } else {
+                        children.push(segment.to_node());
+                    }
+                }
+            }
+        }
+
+        if let Some(group) = current_group.take() {
+            children.push(group);
+        }
+
+        children
     }
 }
 
@@ -481,6 +545,39 @@ UNT+5+1'";
         let node = segment.to_node();
         assert_eq!(node.name, "BGM");
         assert_eq!(node.children.len(), 3);
+    }
+
+    #[test]
+    fn test_orders_grouping_with_multiple_lin_loops() {
+        let data = b"UNH+1+ORDERS:D:96A:UN'\
+BGM+220+PO123+9'\
+LIN+1++123456789:EN'\
+QTY+21:10'\
+LIN+2++987654321:EN'\
+QTY+21:5'\
+UNT+7+1'";
+
+        let parser = EdifactParser::new();
+        let docs = parser.parse(data, "test").unwrap();
+
+        assert_eq!(docs.len(), 1);
+        let root = &docs[0].root;
+
+        let group_nodes: Vec<&Node> = root
+            .children
+            .iter()
+            .filter(|node| node.node_type == NodeType::SegmentGroup)
+            .collect();
+
+        assert_eq!(group_nodes.len(), 2);
+        assert_eq!(group_nodes[0].name, "LINE_ITEM");
+        assert_eq!(group_nodes[1].name, "LINE_ITEM");
+
+        let first_group_first_child = group_nodes[0].children.first();
+        let second_group_first_child = group_nodes[1].children.first();
+
+        assert!(matches!(first_group_first_child, Some(child) if child.name == "LIN"));
+        assert!(matches!(second_group_first_child, Some(child) if child.name == "LIN"));
     }
 
     #[test]
