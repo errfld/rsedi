@@ -105,20 +105,41 @@ impl<'a> SegmentParser<'a> {
             return None;
         }
 
-        let (line, column) = self.buffer.line_column();
-        let position = Position::new(line, column, self.buffer.position(), 0);
+        let (tag_line, tag_column) = self.buffer.line_column();
 
         // Read segment tag
         let tag_bytes = match self.buffer.read_tag() {
             Some(t) => t,
             None => {
                 return Some(Err(Error::Parse {
-                    line,
-                    column,
+                    line: tag_line,
+                    column: tag_column,
                     message: "Expected segment tag (3 characters)".to_string(),
                 }));
             }
         };
+
+        let (post_tag_line, post_tag_column) = self.buffer.line_column();
+        let position = Position::new(post_tag_line, post_tag_column, self.buffer.position(), 0);
+
+        if self.buffer.is_empty() {
+            return Some(Err(Error::Parse {
+                line: post_tag_line,
+                column: post_tag_column,
+                message: "Unexpected end of input after segment tag".to_string(),
+            }));
+        }
+
+        if let Some(next) = self.buffer.peek() {
+            if next != self.buffer.separators.element && next != self.buffer.separators.segment {
+                return Some(Err(Error::Parse {
+                    line: post_tag_line,
+                    column: post_tag_column,
+                    message: "Expected element separator or segment terminator after segment tag"
+                        .to_string(),
+                }));
+            }
+        }
 
         let tag = String::from_utf8_lossy(&tag_bytes).to_string();
 
@@ -211,8 +232,8 @@ impl<'a> SegmentParser<'a> {
                 }
                 _ => {
                     return Some(Err(Error::Parse {
-                        line,
-                        column,
+                        line: post_tag_line,
+                        column: post_tag_column,
                         message: "Unexpected delimiter".to_string(),
                     }));
                 }
@@ -781,6 +802,21 @@ UNT+7+1'";
                 assert!(comps[3].is_empty());
             }
             _ => panic!("Expected composite element at position 1"),
+        }
+    }
+
+    #[test]
+    fn test_error_position_after_tag() {
+        let data = b"UNH?";
+        let mut parser = SegmentParser::new(data, "test");
+
+        let err = parser.next_segment().unwrap().unwrap_err();
+        match err {
+            Error::Parse { line, column, .. } => {
+                assert_eq!(line, 1);
+                assert_eq!(column, 4);
+            }
+            _ => panic!("Expected parse error"),
         }
     }
 }
