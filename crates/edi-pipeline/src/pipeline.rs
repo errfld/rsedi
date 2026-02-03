@@ -660,7 +660,7 @@ mod tests {
 
         assert!(!result.success);
         // File should be in quarantine
-        assert!(pipeline.quarantine().len() > 0);
+        assert!(!pipeline.quarantine().is_empty());
     }
 
     #[test]

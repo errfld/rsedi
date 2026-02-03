@@ -484,12 +484,13 @@ mod tests {
             let processor_clone = Arc::clone(&processor_arc);
             let handle = tokio::spawn(async move {
                 for _ in 0..3 {
-                    if let Err(_) = processor_clone
+                    if processor_clone
                         .process_single(|_data| async move {
                             sleep(Duration::from_millis(5)).await;
                             Ok(())
                         })
                         .await
+                        .is_err()
                     {
                         break;
                     }

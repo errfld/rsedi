@@ -8,7 +8,7 @@ target_type: CSV
 rules:
   # Create a row for each line item using foreach
   - type: foreach
-    source: LIN
+    source: LINE_ITEM
     target: orders
     rules:
       # Order number from BGM segment
@@ -18,20 +18,20 @@ rules:
       
       # Line number from LIN segment
       - type: field
-        source: e1
+        source: LIN/e1
         target: line_number
       
       # Product code from LIN segment (composite element value)
       - type: field
-        source: e3
+        source: LIN/e3/c1
         target: product_code
       
       # Quantity from QTY segment - find the QTY that follows this LIN
       - type: field
-        source: /QTY/e1
+        source: QTY/e1/c2
         target: quantity
       
       # Unit price from PRI segment
       - type: field
-        source: /PRI/e1
+        source: PRI/e1/c2
         target: unit_price

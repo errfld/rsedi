@@ -14,6 +14,9 @@ pub struct MappingRuntime {
     /// Extension registry for custom functions
     extensions: ExtensionRegistry,
 
+    /// Root node for absolute path resolution
+    root_node: Option<Node>,
+
     /// Context stack for nested execution
     context_stack: Vec<MappingContext>,
 }
@@ -88,6 +91,7 @@ impl MappingRuntime {
     pub fn new() -> Self {
         Self {
             extensions: ExtensionRegistry::new(),
+            root_node: None,
             context_stack: Vec::new(),
         }
     }
@@ -96,6 +100,7 @@ impl MappingRuntime {
     pub fn with_extensions(extensions: ExtensionRegistry) -> Self {
         Self {
             extensions,
+            root_node: None,
             context_stack: Vec::new(),
         }
     }
@@ -103,19 +108,25 @@ impl MappingRuntime {
     /// Execute a mapping on a document
     pub fn execute(&mut self, mapping: &Mapping, document: &Document) -> crate::Result<Document> {
         let root_node = document.root.clone();
+        self.root_node = Some(root_node.clone());
         let mut context = MappingContext::new(root_node);
 
-        // Execute all rules
-        for rule in &mapping.rules {
-            self.execute_rule(rule, &mut context)?;
-        }
+        let result = (|| {
+            // Execute all rules
+            for rule in &mapping.rules {
+                self.execute_rule(rule, &mut context)?;
+            }
 
-        // Build result document
-        let result_root = context
-            .target_node
-            .unwrap_or_else(|| Node::new("OUTPUT", NodeType::Root));
+            // Build result document
+            let result_root = context
+                .target_node
+                .unwrap_or_else(|| Node::new("OUTPUT", NodeType::Root));
 
-        Ok(Document::new(result_root))
+            Ok(Document::new(result_root))
+        })();
+
+        self.root_node = None;
+        result
     }
 
     /// Execute a single mapping rule
@@ -292,9 +303,8 @@ impl MappingRuntime {
 
         // Handle absolute paths
         if let Some(relative_path) = path.strip_prefix('/') {
-            // For now, treat as relative from current node
-            // In full implementation, would traverse from root
-            return self.resolve_path(node, relative_path);
+            let root = self.root_node.as_ref().unwrap_or(node);
+            return self.resolve_path(root, relative_path);
         }
 
         // Split path into components
@@ -330,7 +340,8 @@ impl MappingRuntime {
     /// Find a collection of nodes
     fn find_collection(&self, node: &Node, path: &str) -> crate::Result<Vec<Node>> {
         if let Some(relative_path) = path.strip_prefix('/') {
-            return self.find_collection(node, relative_path);
+            let root = self.root_node.as_ref().unwrap_or(node);
+            return self.find_collection(root, relative_path);
         }
 
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
