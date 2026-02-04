@@ -1,0 +1,130 @@
+# Mapping: CSV rows -> EANCOM D96A ORDERS-style IR
+# Source schema: testdata/schemas/csv_orders_target.yaml
+# Target schema: testdata/schemas/eancom_orders_d96a.yaml
+#
+# Key decisions:
+# - Reconstruct EDI header from first CSV row; build LIN loops from all rows.
+# - Keep party roles explicit with separate NAD blocks (BY/SU/DP).
+# - Use defaults for mandatory EDI values when optional CSV fields are blank.
+
+name: csv_to_orders
+source_type: CSV_ORDERS
+target_type: EANCOM_D96A_ORDERS
+
+rules:
+  # Message header and document identity from first row.
+  - type: field
+    source: /rows[0]/DOCUMENT_NUMBER
+    target: BGM.e2
+
+  - type: field
+    source: /rows[0]/DOCUMENT_TYPE
+    target: BGM.e1
+    transform:
+      op: default
+      value: "220"
+
+  - type: field
+    source: /rows[0]/DOCUMENT_DATE
+    target: DTM137.e1
+    transform:
+      op: date_format
+      from: "YYYY-MM-DD"
+      to: "YYYYMMDD"
+
+  - type: field
+    source: /rows[0]/CURRENCY
+    target: CUX.e1
+    transform:
+      op: default
+      value: "EUR"
+
+  # BY/SU/DP parties.
+  - type: field
+    source: /rows[0]/BUYER_GLN
+    target: NAD_BY.e2
+  - type: field
+    source: /rows[0]/SUPPLIER_GLN
+    target: NAD_SU.e2
+  - type: field
+    source: /rows[0]/DELIVERY_GLN
+    target: NAD_DP.e2
+
+  # Optional names with safe defaults.
+  - type: field
+    source: /rows[0]/BUYER_NAME
+    target: NAD_BY.e4
+    transform:
+      op: default
+      value: "UNKNOWN BUYER"
+
+  - type: field
+    source: /rows[0]/SUPPLIER_NAME
+    target: NAD_SU.e4
+    transform:
+      op: default
+      value: "UNKNOWN SUPPLIER"
+
+  # Create one LIN block per CSV row.
+  - type: foreach
+    source: /rows[*]
+    target: LIN
+    rules:
+      - type: field
+        source: LINE_NUMBER
+        target: e1
+
+      - type: field
+        source: GTIN
+        target: e3.c1
+
+      - type: field
+        source: SKU
+        target: e3.c2
+        transform:
+          op: default
+          value: "SKU-NOT-PROVIDED"
+
+      - type: field
+        source: ORDERED_QUANTITY
+        target: QTY21.e1
+
+      - type: lookup
+        table: csv_uom_to_edi
+        key_source: QUANTITY_UNIT
+        target: QTY21.e2
+        default_value: "EA"
+
+      - type: field
+        source: UNIT_PRICE
+        target: PRIAAA.e1
+
+      - type: condition
+        when:
+          op: exists
+          field: LINE_DELIVERY_DATE
+        then:
+          - type: field
+            source: LINE_DELIVERY_DATE
+            target: DTM2.e1
+            transform:
+              op: date_format
+              from: "YYYY-MM-DD"
+              to: "YYYYMMDD"
+
+      - type: condition
+        when:
+          op: exists
+          field: PRODUCT_DESCRIPTION
+        then:
+          - type: field
+            source: PRODUCT_DESCRIPTION
+            target: IMD.e3
+
+lookups:
+  csv_uom_to_edi:
+    name: csv_uom_to_edi
+    entries:
+      EA: "EA"
+      KG: "KGM"
+      L: "LTR"

@@ -1,37 +1,101 @@
-# Mapping: EANCOM ORDERS to CSV
-# Converts EANCOM D96A ORDERS messages to a flat CSV format
+# Mapping: EANCOM D96A ORDERS -> CSV row set
+# Source schema: testdata/schemas/eancom_orders_d96a.yaml
+# Target schema: testdata/schemas/csv_orders_target.yaml
+#
+# Key decisions:
+# - Emit one CSV row per LINE_ITEM group and repeat essential header fields per row.
+# - Keep path expressions close to the runtime's current capabilities for executable examples.
+# - Demonstrate defaults and conditional output for optional fields.
 
 name: orders_to_csv
 source_type: EANCOM_ORDERS
-target_type: CSV
+target_type: CSV_ORDERS
 
 rules:
-  # Create a row for each line item using foreach
   - type: foreach
     source: LINE_ITEM
     target: orders
     rules:
-      # Order number from BGM segment
+      # Header fields repeated for each CSV row.
       - type: field
         source: /BGM/e2
         target: order_number
-      
-      # Line number from LIN segment
+
+      - type: field
+        source: /BGM/e1
+        target: document_type
+        transform:
+          op: default
+          value: "220"
+
+      # Line-level fields.
       - type: field
         source: LIN/e1
         target: line_number
-      
-      # Product code from LIN segment (composite element value)
+
       - type: field
         source: LIN/e3/c1
         target: product_code
-      
-      # Quantity from QTY segment - find the QTY that follows this LIN
+
       - type: field
-        source: QTY/e1/c2
+        source: LIN/e3/c2
+        target: sku
+        transform:
+          op: default
+          value: "UNKNOWN-SKU"
+
+      - type: field
+        source: QTY/e1
         target: quantity
-      
-      # Unit price from PRI segment
+
       - type: field
-        source: PRI/e1/c2
+        source: PRI/e1
         target: unit_price
+
+      # Optional text with default fallback.
+      - type: condition
+        when:
+          op: exists
+          field: IMD/e3
+        then:
+          - type: field
+            source: IMD/e3
+            target: product_description
+        else_rules:
+          - type: field
+            source: /__missing
+            target: product_description
+            transform:
+              op: default
+              value: "No description supplied"
+
+      # Role-aware party projection (BY/SU/DP) when available.
+      - type: condition
+        when:
+          op: equals
+          field: /NAD/e1
+          value: "BY"
+        then:
+          - type: field
+            source: /NAD/e2
+            target: buyer_party_id
+
+      - type: condition
+        when:
+          op: equals
+          field: /NAD/e1
+          value: "SU"
+        then:
+          - type: field
+            source: /NAD/e2
+            target: supplier_party_id
+
+      - type: condition
+        when:
+          op: equals
+          field: /NAD/e1
+          value: "DP"
+        then:
+          - type: field
+            source: /NAD/e2
+            target: delivery_party_id

@@ -1,0 +1,168 @@
+# Mapping: EANCOM D96A ORDERS -> JSON-style IR
+# Source schema: testdata/schemas/eancom_orders_d96a.yaml
+# Target schema: testdata/schemas/csv_orders_target.yaml (reference fields reused for examples)
+#
+# Key decisions:
+# - Preserve hierarchy (header, parties, references, lines) instead of flattening.
+# - Keep partner qualifiers explicit (BY/SU/DP) so downstream JSON keeps business meaning.
+# - Apply light normalization (date format, trimming, defaults).
+
+name: orders_to_json
+source_type: EANCOM_D96A_ORDERS
+target_type: JSON_ORDERS
+
+rules:
+  - type: field
+    source: /UNH/e1
+    target: message_reference
+
+  - type: field
+    source: /BGM/e2
+    target: order_number
+
+  - type: field
+    source: /BGM/e1
+    target: message_type
+    transform:
+      op: default
+      value: "220"
+
+  - type: field
+    source: /DTM[2005='137']/e1
+    target: order_date
+    transform:
+      op: date_format
+      from: "YYYYMMDD"
+      to: "YYYY-MM-DD"
+
+  # Parties array with role-specific defaults.
+  - type: foreach
+    source: /NAD[*]
+    target: parties
+    rules:
+      - type: field
+        source: e1
+        target: role
+
+      - type: field
+        source: e2
+        target: gln
+
+      - type: field
+        source: e4
+        target: name
+        transform:
+          op: chain
+          transforms:
+            - op: trim
+            - op: default
+              value: "Unnamed party"
+
+      - type: condition
+        when:
+          op: equals
+          field: e1
+          value: "BY"
+        then:
+          - type: field
+            source: /RFF[1153='ON']/e1
+            target: buyer_order_reference
+
+      - type: condition
+        when:
+          op: equals
+          field: e1
+          value: "SU"
+        then:
+          - type: field
+            source: /RFF[1153='VA']/e1
+            target: supplier_vat_reference
+
+      - type: condition
+        when:
+          op: equals
+          field: e1
+          value: "DP"
+        then:
+          - type: field
+            source: /DTM[2005='2']/e1
+            target: requested_delivery_date
+            transform:
+              op: date_format
+              from: "YYYYMMDD"
+              to: "YYYY-MM-DD"
+
+  # References array.
+  - type: foreach
+    source: /RFF[*]
+    target: references
+    rules:
+      - type: field
+        source: e1/c1
+        target: qualifier
+      - type: field
+        source: e1/c2
+        target: value
+
+  # Line-item hierarchy.
+  - type: foreach
+    source: /LIN[*]
+    target: lines
+    rules:
+      - type: field
+        source: e1
+        target: line_number
+
+      - type: field
+        source: e3/c1
+        target: gtin
+
+      - type: field
+        source: e3/c2
+        target: sku
+        transform:
+          op: default
+          value: "SKU-NOT-PROVIDED"
+
+      - type: field
+        source: QTY[6063='21']/e1
+        target: quantity
+
+      - type: lookup
+        table: uom_codes
+        key_source: QTY[6063='21']/e2
+        target: quantity_uom
+        default_value: "EA"
+
+      - type: field
+        source: PRI[5125='AAA']/e1
+        target: unit_price
+        transform:
+          op: number_format
+          decimals: 2
+          thousands_sep: null
+
+      - type: condition
+        when:
+          op: exists
+          field: IMD/e3
+        then:
+          - type: field
+            source: IMD/e3
+            target: description
+        else_rules:
+          - type: field
+            source: /__missing
+            target: description
+            transform:
+              op: default
+              value: "No line description"
+
+lookups:
+  uom_codes:
+    name: uom_codes
+    entries:
+      EA: "EA"
+      PCE: "EA"
+      KGM: "KG"
+      LTR: "L"
