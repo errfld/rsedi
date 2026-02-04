@@ -68,6 +68,9 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Check dependency graph support
         id: dependency_graph
         run: |
