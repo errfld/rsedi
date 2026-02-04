@@ -107,7 +107,11 @@ fn run() -> anyhow::Result<CliExitCode> {
     let cli = Cli::parse();
 
     if let Some(config_path) = cli.config.as_deref() {
-        tracing::info!(config = %config_path, "Configuration file argument provided");
+        tracing::warn!(config = %config_path, "Config file support is not implemented in this MVP; argument will be ignored");
+        eprintln!(
+            "WARNING: Config file support is not implemented in this MVP; ignoring '{}'.",
+            config_path
+        );
     }
 
     match cli.command {
@@ -143,7 +147,11 @@ fn transform(
     tracing::info!(input = %input_path, output = %output_path, mapping = %mapping_path, "Starting transform command");
 
     if let Some(schema) = schema_path {
-        tracing::info!(schema = %schema, "Schema argument provided for transform (not used in MVP flow)");
+        tracing::warn!(schema = %schema, "Transform schema argument is not implemented in this MVP and will be ignored");
+        eprintln!(
+            "WARNING: Transform schema argument is not implemented in this MVP; ignoring '{}'.",
+            schema
+        );
     }
 
     let input_bytes = std::fs::read(input_path)
