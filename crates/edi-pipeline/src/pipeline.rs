@@ -10,6 +10,7 @@ use crate::{
     AcceptancePolicy, BatchConfig, Error, QuarantineReason, QuarantineStore, Result,
     StrictnessLevel,
 };
+use edi_adapter_edifact::EdifactParser;
 
 /// Configuration for the pipeline
 #[derive(Debug, Clone)]
@@ -206,8 +207,8 @@ impl Pipeline {
             )));
         }
 
-        // Read file content
-        let content = std::fs::read_to_string(&path)?;
+        // Read raw bytes to support non-UTF8 payloads.
+        let content = std::fs::read(&path)?;
 
         // Simulate processing (in real implementation, this would parse and process EDI)
         let result = self.process_content(&content, &path_str);
@@ -231,7 +232,7 @@ impl Pipeline {
                     if matches!(self.config.acceptance_policy, AcceptancePolicy::Quarantine) {
                         self.quarantine.quarantine(
                             &path_str,
-                            content,
+                            String::from_utf8_lossy(&content).to_string(),
                             QuarantineReason::ProcessingError,
                             file_result.error.clone().unwrap_or_default(),
                         )?;
@@ -252,7 +253,7 @@ impl Pipeline {
                     AcceptancePolicy::Quarantine => {
                         self.quarantine.quarantine(
                             &path_str,
-                            content,
+                            String::from_utf8_lossy(&content).to_string(),
                             QuarantineReason::ProcessingError,
                             e.to_string(),
                         )?;
@@ -266,7 +267,7 @@ impl Pipeline {
     }
 
     /// Process file content (simulated)
-    fn process_content(&self, content: &str, path: &str) -> Result<FileResult> {
+    fn process_content(&self, content: &[u8], path: &str) -> Result<FileResult> {
         let start = Instant::now();
 
         // Simulate validation
@@ -288,7 +289,7 @@ impl Pipeline {
 
         // Simulate message processing
         // In real implementation, parse EDI and process messages
-        let message_count = content.lines().count().max(1);
+        let message_count = self.count_messages(content, path);
         let success_count = message_count;
         let failure_count = 0;
 
@@ -309,6 +310,21 @@ impl Pipeline {
             duration,
             quarantined: false,
         })
+    }
+
+    fn count_messages(&self, content: &[u8], source_name: &str) -> usize {
+        let parser = EdifactParser::new();
+        if let Ok(outcome) = parser.parse_with_warnings(content, source_name) {
+            if !outcome.documents.is_empty() {
+                return outcome.documents.len();
+            }
+        }
+
+        let (element_separator, segment_terminator) = detect_separators(content);
+        let fallback_count =
+            count_segment_occurrences(content, b"UNH", element_separator, segment_terminator);
+
+        fallback_count.max(1)
     }
 
     /// Process multiple files as a batch
@@ -492,6 +508,42 @@ pub trait Mapper {
     fn map(&self, content: &str) -> Result<String>;
 }
 
+fn detect_separators(content: &[u8]) -> (u8, u8) {
+    if content.starts_with(b"UNA") && content.len() >= 9 {
+        (content[4], content[8])
+    } else {
+        (b'+', b'\'')
+    }
+}
+
+fn count_segment_occurrences(
+    content: &[u8],
+    segment_tag: &[u8; 3],
+    element_separator: u8,
+    segment_terminator: u8,
+) -> usize {
+    content
+        .split(|&byte| byte == segment_terminator)
+        .filter(|segment| {
+            let trimmed = trim_ascii_whitespace(segment);
+            trimmed.len() > 3 && &trimmed[..3] == segment_tag && trimmed[3] == element_separator
+        })
+        .count()
+}
+
+fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
+}
+
 impl Default for Pipeline {
     fn default() -> Self {
         Self::with_defaults()
@@ -507,6 +559,12 @@ mod tests {
     fn create_test_file(content: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(content.as_bytes()).unwrap();
+        file
+    }
+
+    fn create_test_file_bytes(content: &[u8]) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(content).unwrap();
         file
     }
 
@@ -532,6 +590,33 @@ mod tests {
 
         assert_eq!(pipeline.stats().files_processed, 1);
         assert_eq!(pipeline.stats().files_successful, 1);
+    }
+
+    #[test]
+    fn test_process_file_counts_messages_from_unh() {
+        let mut pipeline = Pipeline::with_defaults();
+        pipeline.start();
+
+        let data = b"UNH+1+ORDERS:D:96A:UN'\nBGM+220+12345+9'\nUNT+3+1'\n\
+UNH+2+ORDERS:D:96A:UN'\nBGM+220+67890+9'\nUNT+3+2'";
+        let file = create_test_file_bytes(data);
+
+        let result = pipeline.process_file(file.path()).unwrap();
+        assert!(result.success);
+        assert_eq!(result.message_count, 2);
+    }
+
+    #[test]
+    fn test_process_file_non_utf8_content_is_supported() {
+        let mut pipeline = Pipeline::with_defaults();
+        pipeline.start();
+
+        let data = b"UNH+1+ORDERS:D:96A:UN'\xFF\xFEBGM+220+12345+9'UNT+3+1'";
+        let file = create_test_file_bytes(data);
+
+        let result = pipeline.process_file(file.path()).unwrap();
+        assert!(result.success);
+        assert_eq!(result.message_count, 1);
     }
 
     #[test]

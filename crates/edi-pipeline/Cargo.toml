@@ -12,6 +12,7 @@ edi-ir = { workspace = true }
 edi-schema = { workspace = true }
 edi-validation = { workspace = true }
 edi-mapping = { workspace = true }
+edi-adapter-edifact = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
@@ -20,5 +21,4 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tempfile = "3"
-edi-adapter-edifact = { workspace = true }
 edi-adapter-csv = { workspace = true }
