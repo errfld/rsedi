@@ -5,6 +5,7 @@
 //! This crate provides the command-line interface for running
 //! EDI transformations and managing configurations.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -158,7 +159,7 @@ fn transform(
     }
 
     let mapping = MappingDsl::parse_file(Path::new(mapping_path))
-        .map_err(|error| anyhow!("Failed to parse mapping '{}': {}", mapping_path, error))?;
+        .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
 
     let mut runtime = MappingRuntime::new();
     let mut mapped_documents = Vec::with_capacity(parsed.documents.len());
@@ -241,6 +242,7 @@ fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> 
 
     let mut error_lines: Vec<String> = Vec::new();
     let mut warning_lines: Vec<String> = parsed.warnings.iter().map(format_parse_warning).collect();
+    let mut info_lines: Vec<String> = Vec::new();
 
     let mut error_count = 0usize;
     let mut warning_count = warning_lines.len();
@@ -267,7 +269,11 @@ fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> 
                     warning_count += 1;
                     warning_lines.push(format_validation_issue(message_number, issue));
                 }
-                Severity::Info => {}
+                Severity::Info => {
+                    let formatted = format_validation_issue(message_number, issue);
+                    tracing::debug!(issue = %formatted, "Validation info issue");
+                    info_lines.push(formatted);
+                }
             }
         }
     }
@@ -294,6 +300,13 @@ fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> 
         }
     }
 
+    if !info_lines.is_empty() {
+        println!("\nInfo:");
+        for line in &info_lines {
+            println!("  - {}", line);
+        }
+    }
+
     if error_count > 0 {
         Ok(CliExitCode::Errors)
     } else if warning_count > 0 {
@@ -304,15 +317,21 @@ fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> 
     }
 }
 
-fn normalize_document_for_validation(document: &edi_ir::Document) -> edi_ir::Document {
-    let mut normalized = document.clone();
-
-    if normalized.root.node_type == NodeType::Message {
+/// `normalize_document_for_validation` adapts parser output to the validation engine contract:
+/// validation expects a `NodeType::Root` entry node, while EDIFACT parsing can produce a
+/// `NodeType::Message` root. When that happens we clone and remap `NodeType::Message` to
+/// `NodeType::Root` named `ROOT`; otherwise we borrow the original document without cloning.
+fn normalize_document_for_validation<'a>(
+    document: &'a edi_ir::Document,
+) -> Cow<'a, edi_ir::Document> {
+    if document.root.node_type == NodeType::Message {
+        let mut normalized = document.clone();
         normalized.root.node_type = NodeType::Root;
         normalized.root.name = "ROOT".to_string();
+        Cow::Owned(normalized)
+    } else {
+        Cow::Borrowed(document)
     }
-
-    normalized
 }
 
 fn format_parse_warning(warning: &ParseWarning) -> String {
