@@ -624,16 +624,9 @@ pub fn generate_unb(unb: &UnbSegment, separators: &crate::syntax::Separators) ->
         if let Some(ref enc) = unb.syntax_identifier.encoding {
             syntax_comps.push(enc.as_bytes().to_vec());
         }
-    } else if unb.syntax_identifier.encoding.is_some() {
+    } else if let Some(ref enc) = unb.syntax_identifier.encoding {
         syntax_comps.push(vec![]); // Empty service code list
-        syntax_comps.push(
-            unb.syntax_identifier
-                .encoding
-                .as_ref()
-                .unwrap()
-                .as_bytes()
-                .to_vec(),
-        );
+        syntax_comps.push(enc.as_bytes().to_vec());
     }
     elements.push(Element::Composite(syntax_comps));
 
