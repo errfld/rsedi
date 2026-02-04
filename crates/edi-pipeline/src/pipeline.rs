@@ -6,6 +6,8 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use edi_adapter_edifact::EdifactParser;
+
 use crate::{
     AcceptancePolicy, BatchConfig, Error, QuarantineReason, QuarantineStore, Result,
     StrictnessLevel,
@@ -206,10 +208,10 @@ impl Pipeline {
             )));
         }
 
-        // Read file content
-        let content = std::fs::read_to_string(&path)?;
+        // Read raw bytes to support non-UTF8 EDIFACT payloads.
+        let content = std::fs::read(&path)?;
 
-        // Simulate processing (in real implementation, this would parse and process EDI)
+        // Parse and process EDIFACT payload from bytes.
         let result = self.process_content(&content, &path_str);
 
         let duration = start.elapsed();
@@ -220,6 +222,7 @@ impl Pipeline {
 
         match &result {
             Ok(file_result) => {
+                self.stats.messages_processed += file_result.message_count;
                 if file_result.success {
                     self.stats.files_successful += 1;
                     self.stats.messages_successful += file_result.success_count;
@@ -231,7 +234,7 @@ impl Pipeline {
                     if matches!(self.config.acceptance_policy, AcceptancePolicy::Quarantine) {
                         self.quarantine.quarantine(
                             &path_str,
-                            content,
+                            String::from_utf8_lossy(&content).into_owned(),
                             QuarantineReason::ProcessingError,
                             file_result.error.clone().unwrap_or_default(),
                         )?;
@@ -252,7 +255,7 @@ impl Pipeline {
                     AcceptancePolicy::Quarantine => {
                         self.quarantine.quarantine(
                             &path_str,
-                            content,
+                            String::from_utf8_lossy(&content).into_owned(),
                             QuarantineReason::ProcessingError,
                             e.to_string(),
                         )?;
@@ -265,30 +268,45 @@ impl Pipeline {
         result
     }
 
-    /// Process file content (simulated)
-    fn process_content(&self, content: &str, path: &str) -> Result<FileResult> {
+    /// Process file content.
+    fn process_content(&self, content: &[u8], path: &str) -> Result<FileResult> {
         let start = Instant::now();
 
         // Simulate validation
-        if self.config.validate_before_processing {
-            // In real implementation, validate against schema
-            if content.is_empty() {
-                return Ok(FileResult {
-                    path: path.to_string(),
-                    success: false,
-                    error: Some("Empty file".to_string()),
-                    message_count: 0,
-                    success_count: 0,
-                    failure_count: 0,
-                    duration: start.elapsed(),
-                    quarantined: false,
-                });
-            }
+        if self.config.validate_before_processing && content.is_empty() {
+            return Ok(FileResult {
+                path: path.to_string(),
+                success: false,
+                error: Some("Empty file".to_string()),
+                message_count: 0,
+                success_count: 0,
+                failure_count: 0,
+                duration: start.elapsed(),
+                quarantined: false,
+            });
         }
 
-        // Simulate message processing
-        // In real implementation, parse EDI and process messages
-        let message_count = content.lines().count().max(1);
+        let parser = EdifactParser::new();
+        let documents = parser.parse(content, path).map_err(|err| {
+            Error::Pipeline(format!(
+                "Failed to parse EDIFACT content in '{path}': {err}"
+            ))
+        })?;
+
+        let message_count = documents.len();
+        if message_count == 0 {
+            return Ok(FileResult {
+                path: path.to_string(),
+                success: false,
+                error: Some("No EDIFACT messages found (missing UNH/UNT)".to_string()),
+                message_count: 0,
+                success_count: 0,
+                failure_count: 0,
+                duration: start.elapsed(),
+                quarantined: false,
+            });
+        }
+
         let success_count = message_count;
         let failure_count = 0;
 
@@ -510,6 +528,36 @@ mod tests {
         file
     }
 
+    fn create_test_file_bytes(content: &[u8]) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(content).unwrap();
+        file
+    }
+
+    fn valid_edi_message(message_ref: usize) -> String {
+        format!(
+            "UNA:+.? '\n\
+             UNB+UNOA:3+SENDER+RECEIVER+200101:1200+1234567'\n\
+             UNH+{message_ref}+ORDERS:D:96A:UN'\n\
+             BGM+220+PO{message_ref}+9'\n\
+             UNT+3+{message_ref}'\n\
+             UNZ+1+1234567'\n"
+        )
+    }
+
+    fn valid_edi_interchange_with_two_messages() -> String {
+        "UNA:+.? '\n\
+         UNB+UNOA:3+SENDER+RECEIVER+200101:1200+1234567'\n\
+         UNH+1+ORDERS:D:96A:UN'\n\
+         BGM+220+PO1+9'\n\
+         UNT+3+1'\n\
+         UNH+2+ORDERS:D:96A:UN'\n\
+         BGM+220+PO2+9'\n\
+         UNT+3+2'\n\
+         UNZ+2+1234567'\n"
+            .to_string()
+    }
+
     #[test]
     fn test_pipeline_creation() {
         let config = PipelineConfig::default();
@@ -524,7 +572,7 @@ mod tests {
         let mut pipeline = Pipeline::with_defaults();
         pipeline.start();
 
-        let file = create_test_file("UNA:+.? 'UNB+UNOA:3+SENDER+RECEIVER+200101:1200+1234567'");
+        let file = create_test_file(&valid_edi_message(1));
 
         let result = pipeline.process_file(file.path()).unwrap();
         assert!(result.success);
@@ -539,9 +587,9 @@ mod tests {
         let mut pipeline = Pipeline::with_defaults();
         pipeline.start();
 
-        let file1 = create_test_file("Message 1");
-        let file2 = create_test_file("Message 2");
-        let file3 = create_test_file("Message 3");
+        let file1 = create_test_file(&valid_edi_message(1));
+        let file2 = create_test_file(&valid_edi_message(2));
+        let file3 = create_test_file(&valid_edi_message(3));
 
         let paths = vec![file1.path(), file2.path(), file3.path()];
         let result = pipeline.process_batch(&paths).unwrap();
@@ -574,7 +622,7 @@ mod tests {
         let mut pipeline = Pipeline::new(config);
         pipeline.start();
 
-        let file = create_test_file("Test message");
+        let file = create_test_file(&valid_edi_message(1));
         let result = pipeline.process_file(file.path()).unwrap();
 
         assert!(result.success);
@@ -599,7 +647,7 @@ mod tests {
 
         // Process some files
         for i in 0..5 {
-            let file = create_test_file(&format!("Message {}", i));
+            let file = create_test_file(&valid_edi_message(i + 1));
             pipeline.process_file(file.path()).unwrap();
         }
 
@@ -618,8 +666,8 @@ mod tests {
         let mut pipeline = Pipeline::new(config);
         pipeline.start();
 
-        let file1 = create_test_file("Valid");
-        let file2 = create_test_file("Also valid");
+        let file1 = create_test_file(&valid_edi_message(1));
+        let file2 = create_test_file(&valid_edi_message(2));
 
         let paths = vec![file1.path(), file2.path()];
         let result = pipeline.process_batch(&paths).unwrap();
@@ -753,7 +801,7 @@ mod tests {
         let mut pipeline = Pipeline::with_defaults();
         pipeline.start();
 
-        let file = create_test_file("Test");
+        let file = create_test_file(&valid_edi_message(1));
         pipeline.process_file(file.path()).unwrap();
 
         assert_eq!(pipeline.stats().files_processed, 1);
@@ -792,5 +840,39 @@ mod tests {
             };
             let _pipeline = Pipeline::new(config);
         }
+    }
+
+    #[test]
+    fn test_process_file_counts_messages_from_edifact_boundaries() {
+        let mut pipeline = Pipeline::with_defaults();
+        pipeline.start();
+
+        let file = create_test_file(&valid_edi_interchange_with_two_messages());
+        let result = pipeline.process_file(file.path()).unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.message_count, 2);
+        assert_eq!(result.success_count, 2);
+        assert_eq!(pipeline.stats().messages_processed, 2);
+    }
+
+    #[test]
+    fn test_process_file_supports_non_utf8_bytes() {
+        let mut pipeline = Pipeline::with_defaults();
+        pipeline.start();
+
+        // Includes 0xE9 in an element value ("Caf\xe9"), which is invalid UTF-8.
+        let content = b"UNA:+.? '\
+UNB+UNOA:3+SENDER+RECEIVER+200101:1200+1234567'\
+UNH+1+ORDERS:D:96A:UN'\
+BGM+220+PO123+9'\
+FTX+AAI+++Caf\xe9'\
+UNT+4+1'\
+UNZ+1+1234567'";
+        let file = create_test_file_bytes(content);
+
+        let result = pipeline.process_file(file.path()).unwrap();
+        assert!(result.success);
+        assert_eq!(result.message_count, 1);
     }
 }

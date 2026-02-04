@@ -27,6 +27,18 @@ fn valid_edi_message() -> String {
         .to_string()
 }
 
+fn valid_edi_message_with_ref(message_ref: usize) -> String {
+    format!(
+        "UNA:+.? '\n\
+         UNB+UNOA:3+SENDER+RECEIVER+200101:1200+1234567'\n\
+         UNH+{message_ref}+ORDERS:D:96A:UN'\n\
+         BGM+220+PO{message_ref}+9'\n\
+         DTM+137:20200101:102'\n\
+         UNT+5+{message_ref}'\n\
+         UNZ+1+1234567'\n"
+    )
+}
+
 /// Helper to create an invalid EDI message
 fn invalid_edi_message() -> String {
     "INVALID EDI CONTENT\nTHIS IS NOT VALID\n".to_string()
@@ -63,7 +75,7 @@ fn test_end_to_end_batch_processing() {
 
     // Create multiple test files
     let files: Vec<_> = (0..5)
-        .map(|i| create_edi_file(&format!("{}Message {}", valid_edi_message(), i)))
+        .map(|i| create_edi_file(&valid_edi_message_with_ref(i + 1)))
         .collect();
 
     let paths: Vec<_> = files.iter().map(|f| f.path()).collect();
