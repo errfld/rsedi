@@ -11,6 +11,7 @@ use crate::{
     StrictnessLevel,
 };
 use edi_adapter_edifact::EdifactParser;
+use tracing::warn;
 
 /// Configuration for the pipeline
 #[derive(Debug, Clone)]
@@ -68,7 +69,7 @@ pub struct Pipeline {
     /// Pipeline configuration
     config: PipelineConfig,
     /// Quarantine store for failed messages
-    quarantine: QuarantineStore<String>,
+    quarantine: QuarantineStore<Vec<u8>>,
     /// Processing statistics
     stats: PipelineStats,
     /// Whether pipeline is running
@@ -232,7 +233,7 @@ impl Pipeline {
                     if matches!(self.config.acceptance_policy, AcceptancePolicy::Quarantine) {
                         self.quarantine.quarantine(
                             &path_str,
-                            String::from_utf8_lossy(&content).to_string(),
+                            content.clone(),
                             QuarantineReason::ProcessingError,
                             file_result.error.clone().unwrap_or_default(),
                         )?;
@@ -253,7 +254,7 @@ impl Pipeline {
                     AcceptancePolicy::Quarantine => {
                         self.quarantine.quarantine(
                             &path_str,
-                            String::from_utf8_lossy(&content).to_string(),
+                            content.clone(),
                             QuarantineReason::ProcessingError,
                             e.to_string(),
                         )?;
@@ -314,15 +315,39 @@ impl Pipeline {
 
     fn count_messages(&self, content: &[u8], source_name: &str) -> usize {
         let parser = EdifactParser::new();
-        if let Ok(outcome) = parser.parse_with_warnings(content, source_name) {
-            if !outcome.documents.is_empty() {
-                return outcome.documents.len();
+        match parser.parse_with_warnings(content, source_name) {
+            Ok(outcome) if !outcome.documents.is_empty() => return outcome.documents.len(),
+            Ok(outcome) => {
+                warn!(
+                    source = source_name,
+                    content_len = content.len(),
+                    warning_count = outcome.warnings.len(),
+                    "Parser produced no complete documents; falling back to UNH segment counting"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    source = source_name,
+                    content_len = content.len(),
+                    parser_error = ?err,
+                    "EDIFACT parser failed; falling back to UNH segment counting"
+                );
             }
         }
 
         let (element_separator, segment_terminator) = detect_separators(content);
         let fallback_count =
             count_segment_occurrences(content, b"UNH", element_separator, segment_terminator);
+
+        if fallback_count == 0 {
+            warn!(
+                source = source_name,
+                content_len = content.len(),
+                fallback_count,
+                forced_min = 1,
+                "UNH fallback found no messages; forcing minimum message count of 1"
+            );
+        }
 
         fallback_count.max(1)
     }
@@ -454,12 +479,12 @@ impl Pipeline {
     }
 
     /// Get quarantine store
-    pub fn quarantine(&self) -> &QuarantineStore<String> {
+    pub fn quarantine(&self) -> &QuarantineStore<Vec<u8>> {
         &self.quarantine
     }
 
     /// Get mutable quarantine store
-    pub fn quarantine_mut(&mut self) -> &mut QuarantineStore<String> {
+    pub fn quarantine_mut(&mut self) -> &mut QuarantineStore<Vec<u8>> {
         &mut self.quarantine
     }
 
