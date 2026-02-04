@@ -5,7 +5,7 @@
 use edi_ir::{Document, Node, NodeType, Value};
 use std::collections::HashMap;
 
-use crate::dsl::{Condition, Mapping, MappingRule, Transform};
+use crate::dsl::{Condition, LookupDefinition, Mapping, MappingRule, Transform};
 use crate::extensions::ExtensionRegistry;
 use crate::transforms::apply_transform;
 
@@ -13,6 +13,12 @@ use crate::transforms::apply_transform;
 pub struct MappingRuntime {
     /// Extension registry for custom functions
     extensions: ExtensionRegistry,
+
+    /// Lookup tables available for the current mapping execution
+    lookup_tables: HashMap<String, LookupDefinition>,
+
+    /// Root node for absolute path resolution
+    root_node: Option<Node>,
 
     /// Context stack for nested execution
     context_stack: Vec<MappingContext>,
@@ -88,6 +94,8 @@ impl MappingRuntime {
     pub fn new() -> Self {
         Self {
             extensions: ExtensionRegistry::new(),
+            lookup_tables: HashMap::new(),
+            root_node: None,
             context_stack: Vec::new(),
         }
     }
@@ -96,6 +104,8 @@ impl MappingRuntime {
     pub fn with_extensions(extensions: ExtensionRegistry) -> Self {
         Self {
             extensions,
+            lookup_tables: HashMap::new(),
+            root_node: None,
             context_stack: Vec::new(),
         }
     }
@@ -103,19 +113,28 @@ impl MappingRuntime {
     /// Execute a mapping on a document
     pub fn execute(&mut self, mapping: &Mapping, document: &Document) -> crate::Result<Document> {
         let root_node = document.root.clone();
+        self.lookup_tables = mapping.lookups.clone();
+        self.root_node = Some(root_node.clone());
         let mut context = MappingContext::new(root_node);
 
-        // Execute all rules
-        for rule in &mapping.rules {
-            self.execute_rule(rule, &mut context)?;
-        }
+        let result = (|| {
+            // Execute all rules
+            for rule in &mapping.rules {
+                self.execute_rule(rule, &mut context)?;
+            }
 
-        // Build result document
-        let result_root = context
-            .target_node
-            .unwrap_or_else(|| Node::new("OUTPUT", NodeType::Root));
+            // Build result document with a stable root node.
+            let mut result_root = Node::new(&mapping.target_type, NodeType::Root);
+            if let Some(mapped_output) = context.target_node {
+                result_root.add_child(mapped_output);
+            }
 
-        Ok(Document::new(result_root))
+            Ok(Document::new(result_root))
+        })();
+
+        self.lookup_tables.clear();
+        self.root_node = None;
+        result
     }
 
     /// Execute a single mapping rule
@@ -265,12 +284,20 @@ impl MappingRuntime {
             crate::Error::Runtime(format!("Lookup key '{}' is not a string", key_source))
         })?;
 
-        // Note: In real implementation, would lookup in mapping.lookups
-        // For now, just use the key as value or default
-        let result_value = default_value
-            .cloned()
-            .map(Value::String)
-            .unwrap_or_else(|| Value::String(format!("LOOKUP_{}_{}", table, key_str)));
+        let lookup_table = self.lookup_tables.get(table).ok_or_else(|| {
+            crate::Error::Runtime(format!("Lookup table '{}' not found", table))
+        })?;
+
+        let result_value = if let Some(value) = lookup_table.entries.get(&key_str) {
+            Value::String(value.clone())
+        } else if let Some(default) = default_value {
+            Value::String(default.clone())
+        } else {
+            return Err(crate::Error::Runtime(format!(
+                "Lookup key '{}' not found in table '{}'",
+                key_str, table
+            )));
+        };
 
         // Create target node
         let target_node = Node::with_value(target_name, NodeType::Field, result_value);
@@ -292,9 +319,8 @@ impl MappingRuntime {
 
         // Handle absolute paths
         if let Some(relative_path) = path.strip_prefix('/') {
-            // For now, treat as relative from current node
-            // In full implementation, would traverse from root
-            return self.resolve_path(node, relative_path);
+            let root = self.root_node.as_ref().unwrap_or(node);
+            return self.resolve_path(root, relative_path);
         }
 
         // Split path into components
@@ -330,7 +356,8 @@ impl MappingRuntime {
     /// Find a collection of nodes
     fn find_collection(&self, node: &Node, path: &str) -> crate::Result<Vec<Node>> {
         if let Some(relative_path) = path.strip_prefix('/') {
-            return self.find_collection(node, relative_path);
+            let root = self.root_node.as_ref().unwrap_or(node);
+            return self.find_collection(root, relative_path);
         }
 
         let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -494,6 +521,14 @@ mod tests {
     use super::*;
     use crate::dsl::MappingDsl;
 
+    fn first_mapped_node(document: &Document) -> &Node {
+        document
+            .root
+            .children
+            .first()
+            .expect("expected mapped output node")
+    }
+
     fn create_test_document() -> Document {
         let mut root = Node::new("ROOT", NodeType::Root);
 
@@ -566,16 +601,18 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
 
-        assert_eq!(result.root.name, "order_id");
+        assert_eq!(result.root.name, "OUTPUT");
+        assert_eq!(mapped.name, "order_id");
         assert_eq!(
-            result.root.value,
+            mapped.value,
             Some(Value::String("ORD12345".to_string()))
         );
-        assert_eq!(result.root.children.len(), 1);
-        assert_eq!(result.root.children[0].name, "order_date");
+        assert_eq!(mapped.children.len(), 1);
+        assert_eq!(mapped.children[0].name, "order_date");
         assert_eq!(
-            result.root.children[0].value,
+            mapped.children[0].value,
             Some(Value::String("20240115".to_string()))
         );
     }
@@ -604,13 +641,14 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
 
-        assert_eq!(result.root.name, "lines");
-        assert_eq!(result.root.node_type, NodeType::SegmentGroup);
-        assert_eq!(result.root.children.len(), 2);
+        assert_eq!(mapped.name, "lines");
+        assert_eq!(mapped.node_type, NodeType::SegmentGroup);
+        assert_eq!(mapped.children.len(), 2);
 
         // Check first item - first field becomes parent, second is child
-        let first = &result.root.children[0];
+        let first = &mapped.children[0];
         assert_eq!(first.name, "line_number");
         assert_eq!(first.value, Some(Value::Integer(1)));
         assert_eq!(first.children.len(), 1);
@@ -620,7 +658,7 @@ rules:
         );
 
         // Check second item
-        let second = &result.root.children[1];
+        let second = &mapped.children[1];
         assert_eq!(second.name, "line_number");
         assert_eq!(second.value, Some(Value::Integer(2)));
         assert_eq!(second.children.len(), 1);
@@ -653,7 +691,7 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "matched_order");
+        assert_eq!(first_mapped_node(&result).name, "matched_order");
 
         // Test condition not met
         let dsl2 = r#"
@@ -689,6 +727,11 @@ rules:
     key_source: /HEADER/ORDER_NUMBER
     target: lookup_result
     default_value: "NOT_FOUND"
+lookups:
+  countries:
+    name: countries
+    entries:
+      ORD12345: "Germany"
 "#;
 
         let mapping = MappingDsl::parse(dsl).unwrap();
@@ -696,12 +739,60 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "lookup_result");
-        // Should use default value
+        assert_eq!(first_mapped_node(&result).name, "lookup_result");
         assert_eq!(
-            result.root.value,
-            Some(Value::String("NOT_FOUND".to_string()))
+            first_mapped_node(&result).value,
+            Some(Value::String("Germany".to_string()))
         );
+    }
+
+    #[test]
+    fn test_execute_lookup_missing_entry_without_default() {
+        let dsl = r#"
+name: lookup_missing_entry_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: lookup
+    table: countries
+    key_source: /HEADER/ORDER_NUMBER
+    target: lookup_result
+lookups:
+  countries:
+    name: countries
+    entries:
+      OTHER: "Other Country"
+"#;
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let document = create_test_document();
+        let mut runtime = MappingRuntime::new();
+
+        let err = runtime.execute(&mapping, &document).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Lookup key 'ORD12345' not found in table 'countries'"));
+    }
+
+    #[test]
+    fn test_execute_lookup_missing_table() {
+        let dsl = r#"
+name: lookup_missing_table_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: lookup
+    table: countries
+    key_source: /HEADER/ORDER_NUMBER
+    target: lookup_result
+"#;
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let document = create_test_document();
+        let mut runtime = MappingRuntime::new();
+
+        let err = runtime.execute(&mapping, &document).unwrap_err();
+        assert!(err.to_string().contains("Lookup table 'countries' not found"));
     }
 
     #[test]
@@ -722,8 +813,8 @@ rules:
 
         // Should not error on missing path, just return null
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "output");
-        assert_eq!(result.root.value, Some(Value::Null));
+        assert_eq!(first_mapped_node(&result).name, "output");
+        assert_eq!(first_mapped_node(&result).value, Some(Value::Null));
     }
 
     #[test]
@@ -776,9 +867,9 @@ rules:
 
         let result = runtime.execute(&mapping, &document).unwrap();
         // Block creates nested structure where first field is parent, second is child
-        assert_eq!(result.root.name, "level1");
-        assert_eq!(result.root.children.len(), 1);
-        assert_eq!(result.root.children[0].name, "level2");
+        assert_eq!(first_mapped_node(&result).name, "level1");
+        assert_eq!(first_mapped_node(&result).children.len(), 1);
+        assert_eq!(first_mapped_node(&result).children[0].name, "level2");
     }
 
     #[test]
@@ -803,9 +894,9 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "exists_result");
+        assert_eq!(first_mapped_node(&result).name, "exists_result");
         assert_eq!(
-            result.root.value,
+            first_mapped_node(&result).value,
             Some(Value::String("ORD12345".to_string()))
         );
     }
@@ -833,7 +924,7 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "contains_result");
+        assert_eq!(first_mapped_node(&result).name, "contains_result");
     }
 
     #[test]
@@ -859,7 +950,7 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "matches_result");
+        assert_eq!(first_mapped_node(&result).name, "matches_result");
     }
 
     #[test]
@@ -888,7 +979,7 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "and_result");
+        assert_eq!(first_mapped_node(&result).name, "and_result");
     }
 
     #[test]
@@ -919,7 +1010,7 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "or_result");
+        assert_eq!(first_mapped_node(&result).name, "or_result");
     }
 
     #[test]
@@ -947,7 +1038,7 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "not_result");
+        assert_eq!(first_mapped_node(&result).name, "not_result");
     }
 
     #[test]
@@ -973,9 +1064,10 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
 
         // Check transforms were applied - first field is parent, transform applied to its value
-        let first = &result.root.children[0];
+        let first = &mapped.children[0];
         assert_eq!(first.name, "product_code");
         // The SKU value should be uppercased ("abc123" -> "ABC123")
         assert_eq!(first.value, Some(Value::String("ABC123".to_string())));
@@ -1033,8 +1125,8 @@ rules:
 
         let result = runtime.execute(&mapping, &document).unwrap();
         // Should create empty container
-        assert_eq!(result.root.name, "items");
-        assert!(result.root.children.is_empty());
+        assert_eq!(first_mapped_node(&result).name, "items");
+        assert!(first_mapped_node(&result).children.is_empty());
     }
 
     #[test]
@@ -1069,6 +1161,6 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let result = runtime.execute(&mapping, &document).unwrap();
-        assert_eq!(result.root.name, "complex_result");
+        assert_eq!(first_mapped_node(&result).name, "complex_result");
     }
 }

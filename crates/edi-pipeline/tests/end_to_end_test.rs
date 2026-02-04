@@ -113,7 +113,7 @@ fn test_end_to_end_quarantine_workflow() {
     let result = pipeline.process_file(invalid_file.path()).unwrap();
 
     assert!(!result.success);
-    assert!(pipeline.quarantine().len() > 0);
+    assert!(!pipeline.quarantine().is_empty());
 
     // Verify message is in quarantine with metadata
     let quarantined = pipeline.quarantine().get_all();

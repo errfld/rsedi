@@ -32,12 +32,13 @@ fn testdata_path() -> PathBuf {
 /// Helper to load and parse an EDI file
 fn load_edi_file(filename: &str) -> edi_ir::Document {
     let path = testdata_path().join("edi").join(filename);
-    let content = fs::read(&path).expect(&format!("Failed to read {}", path.display()));
+    let content =
+        fs::read(&path).unwrap_or_else(|_| panic!("Failed to read {}", path.display()));
 
     let parser = EdifactParser::new();
     let docs = parser
         .parse(&content, filename)
-        .expect(&format!("Failed to parse {}", filename));
+        .unwrap_or_else(|err| panic!("Failed to parse {}: {}", filename, err));
 
     assert!(!docs.is_empty(), "No documents found in {}", filename);
     docs.into_iter().next().unwrap()
@@ -49,13 +50,14 @@ fn load_schema(name: &str, version: &str) -> edi_schema::Schema {
     let loader = SchemaLoader::new(vec![schema_path]);
     loader
         .load(name, version)
-        .expect(&format!("Failed to load schema {}:{}", name, version))
+        .unwrap_or_else(|err| panic!("Failed to load schema {}:{}: {}", name, version, err))
 }
 
 /// Helper to load a mapping
 fn load_mapping(filename: &str) -> edi_mapping::dsl::Mapping {
     let path = testdata_path().join("mappings").join(filename);
-    MappingDsl::parse_file(&path).expect(&format!("Failed to load mapping from {}", path.display()))
+    MappingDsl::parse_file(&path)
+        .unwrap_or_else(|err| panic!("Failed to load mapping from {}: {}", path.display(), err))
 }
 
 /// Helper to validate a document against a schema
@@ -230,8 +232,13 @@ fn test_orders_multiple_line_items() {
     // Test that multiple line items are handled correctly
     let doc = load_edi_file("orders_valid.edi");
 
-    // Count LIN segments in the document
-    let lin_count = doc.root.children.iter().filter(|n| n.name == "LIN").count();
+    // Count line item groups in the document
+    let lin_count = doc
+        .root
+        .children
+        .iter()
+        .filter(|n| n.name == "LINE_ITEM")
+        .count();
 
     assert!(
         lin_count >= 2,
@@ -243,7 +250,11 @@ fn test_orders_multiple_line_items() {
     let mapped_doc = execute_mapping(&mapping, &doc);
 
     // Should have same number of output rows as line items
-    let output_count = mapped_doc.root.children.len();
+    let output_count = mapped_doc
+        .root
+        .children
+        .first()
+        .map_or(0, |container| container.children.len());
     assert_eq!(
         output_count, lin_count,
         "Should have one output row per line item"
@@ -300,7 +311,7 @@ fn test_orders_streaming_performance() {
     // Parse multiple times to check performance characteristics
     for i in 0..10 {
         let docs = parser
-            .parse(&content, &format!("iteration_{}", i))
+            .parse(&content, format!("iteration_{}", i))
             .expect("Parse should succeed");
         assert!(!docs.is_empty(), "Should parse document");
     }

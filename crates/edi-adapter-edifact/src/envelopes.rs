@@ -2120,26 +2120,26 @@ mod tests {
 
     #[test]
     fn test_memory_control_number_generator() {
-        let gen = MemoryControlNumberGenerator::new();
+        let generator = MemoryControlNumberGenerator::new();
 
         // Test interchange refs
-        let ref1 = gen.next_interchange_ref().unwrap();
-        let ref2 = gen.next_interchange_ref().unwrap();
+        let ref1 = generator.next_interchange_ref().unwrap();
+        let ref2 = generator.next_interchange_ref().unwrap();
         assert_eq!(ref1, "00000000000001");
         assert_eq!(ref2, "00000000000002");
 
         // Test message refs
-        let msg1 = gen.next_message_ref(&ref1).unwrap();
-        let msg2 = gen.next_message_ref(&ref1).unwrap();
-        let msg3 = gen.next_message_ref("other").unwrap();
+        let msg1 = generator.next_message_ref(&ref1).unwrap();
+        let msg2 = generator.next_message_ref(&ref1).unwrap();
+        let msg3 = generator.next_message_ref("other").unwrap();
 
         assert_eq!(msg1, "000001");
         assert_eq!(msg2, "000002");
         assert_eq!(msg3, "000001");
 
         // Reset and verify
-        gen.reset().unwrap();
-        let ref3 = gen.next_interchange_ref().unwrap();
+        generator.reset().unwrap();
+        let ref3 = generator.next_interchange_ref().unwrap();
         assert_eq!(ref3, "00000000000001");
     }
 
@@ -2149,17 +2149,17 @@ mod tests {
         let file_path = temp_dir.path().join("control_numbers.json");
         let file_path_str = file_path.to_str().unwrap();
 
-        let gen = FileBasedControlNumberGenerator::new(file_path_str).unwrap();
+        let generator = FileBasedControlNumberGenerator::new(file_path_str).unwrap();
 
         // Generate some numbers
-        let ref1 = gen.next_interchange_ref().unwrap();
+        let ref1 = generator.next_interchange_ref().unwrap();
         assert_eq!(ref1, "00000000000001");
 
-        let msg1 = gen.next_message_ref(&ref1).unwrap();
+        let msg1 = generator.next_message_ref(&ref1).unwrap();
         assert_eq!(msg1, "000001");
 
         // Create new generator from same file
-        drop(gen);
+        drop(generator);
         let gen2 = FileBasedControlNumberGenerator::new(file_path_str).unwrap();
 
         // Should continue from where we left off

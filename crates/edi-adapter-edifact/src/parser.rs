@@ -155,6 +155,20 @@ impl<'a> SegmentParser<'a> {
         // Parse elements until segment terminator
         let mut elements = Vec::new();
         let mut components = Vec::new();
+        let push_simple_element =
+            |components: &mut Vec<Vec<u8>>, elements: &mut Vec<Element>| -> Result<()> {
+                match components.pop() {
+                    Some(component) => {
+                        elements.push(Element::Simple(component));
+                        Ok(())
+                    }
+                    None => Err(Error::Parse {
+                        line: post_tag_line,
+                        column: post_tag_column,
+                        message: "Missing component for simple element".to_string(),
+                    }),
+                }
+            };
 
         // Skip the element separator immediately after the tag (if present)
         if self.buffer.peek() == Some(self.buffer.separators.element) {
@@ -203,7 +217,9 @@ impl<'a> SegmentParser<'a> {
                     components.push(value);
                     if components.len() == 1 {
                         // Simple element (single component)
-                        elements.push(Element::Simple(components.pop().unwrap()));
+                        if let Err(err) = push_simple_element(&mut components, &mut elements) {
+                            return Some(Err(err));
+                        }
                     } else {
                         // Composite element (multiple components)
                         elements.push(Element::Composite(std::mem::take(&mut components)));
@@ -214,7 +230,9 @@ impl<'a> SegmentParser<'a> {
                     // Segment terminator - finish last element
                     components.push(value);
                     if components.len() == 1 {
-                        elements.push(Element::Simple(components.pop().unwrap()));
+                        if let Err(err) = push_simple_element(&mut components, &mut elements) {
+                            return Some(Err(err));
+                        }
                     } else {
                         elements.push(Element::Composite(components));
                     }
@@ -224,7 +242,9 @@ impl<'a> SegmentParser<'a> {
                     // End of input without segment terminator
                     components.push(value);
                     if components.len() == 1 {
-                        elements.push(Element::Simple(components.pop().unwrap()));
+                        if let Err(err) = push_simple_element(&mut components, &mut elements) {
+                            return Some(Err(err));
+                        }
                     } else {
                         elements.push(Element::Composite(components));
                     }
@@ -293,8 +313,8 @@ impl EdifactParser {
             match segment.tag.as_str() {
                 "UNB" => {
                     // Interchange header
-                    if let Some(Element::Simple(ref _sender)) = segment.elements.get(1) {
-                        if let Some(Element::Simple(ref id)) = segment.elements.get(4) {
+                    if let Some(Element::Simple(_sender)) = segment.elements.get(1) {
+                        if let Some(Element::Simple(id)) = segment.elements.get(4) {
                             _interchange_ref = Some(String::from_utf8_lossy(id).to_string());
                         }
                     }
@@ -386,10 +406,11 @@ impl EdifactParser {
             root.add_child(child);
         }
 
-        let mut metadata = DocumentMetadata::default();
-
-        metadata.doc_type = message_type;
-        metadata.version = version;
+        let mut metadata = DocumentMetadata {
+            doc_type: message_type,
+            version,
+            ..Default::default()
+        };
         if let Some(message_ref) = message_ref {
             metadata.message_refs.push(message_ref);
         }
@@ -404,7 +425,7 @@ impl EdifactParser {
 
         if let Some(unh) = segments.iter().find(|s| s.tag == "UNH") {
             // UNH structure: +message_reference+message_type:version:release:agency'
-            if let Some(Element::Composite(ref msg_id)) = unh.elements.get(1) {
+            if let Some(Element::Composite(msg_id)) = unh.elements.get(1) {
                 if let Some(type_component) = msg_id.first() {
                     message_type = Some(String::from_utf8_lossy(type_component).to_string());
                 }
@@ -423,7 +444,7 @@ impl EdifactParser {
                 };
             }
 
-            if let Some(Element::Simple(ref msg_ref)) = unh.elements.first() {
+            if let Some(Element::Simple(msg_ref)) = unh.elements.first() {
                 message_ref = Some(String::from_utf8_lossy(msg_ref).to_string());
             }
         }

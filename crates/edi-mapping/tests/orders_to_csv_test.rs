@@ -6,6 +6,10 @@ use edi_ir::{Document, Node, NodeType, Value};
 use edi_mapping::{MappingDsl, MappingRuntime};
 use std::path::PathBuf;
 
+fn first_mapped_node(document: &Document) -> Option<&Node> {
+    document.root.children.first()
+}
+
 /// Create a test ORDERS document similar to EANCOM D96A format
 fn create_test_orders_document() -> Document {
     let mut root = Node::new("ROOT", NodeType::Root);
@@ -344,7 +348,7 @@ rules:
     let result = runtime.execute(&mapping, &document).unwrap();
 
     // Value should be trimmed and uppercased
-    assert_eq!(result.root.name, "customer_name");
+    assert_eq!(first_mapped_node(&result).unwrap().name, "customer_name");
     // Note: The actual transformation logic would need to be fully implemented
 }
 
@@ -393,11 +397,12 @@ rules:
 
     let mut runtime = MappingRuntime::new();
     let result = runtime.execute(&mapping, &document).unwrap();
+    let mapped = first_mapped_node(&result).unwrap();
 
-    assert_eq!(result.root.name, "items");
+    assert_eq!(mapped.name, "items");
     // Note: Implementation processes items - structure depends on foreach execution
     assert!(
-        !result.root.children.is_empty(),
+        !mapped.children.is_empty(),
         "Should have processed at least one item"
     );
 }
@@ -449,7 +454,7 @@ rules:
 
     let mut runtime = MappingRuntime::new();
     let result1 = runtime.execute(&mapping, &doc1).unwrap();
-    assert_eq!(result1.root.name, "standard_order");
+    assert_eq!(first_mapped_node(&result1).unwrap().name, "standard_order");
 
     // Test with blanket order
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -468,7 +473,7 @@ rules:
     let doc2 = Document::new(root2);
 
     let result2 = runtime.execute(&mapping, &doc2).unwrap();
-    assert_eq!(result2.root.name, "blanket_order");
+    assert_eq!(first_mapped_node(&result2).unwrap().name, "blanket_order");
 }
 
 #[test]
@@ -488,8 +493,8 @@ rules:
     let mut runtime = MappingRuntime::new();
 
     let result = runtime.execute(&mapping, &document).unwrap();
-    assert_eq!(result.root.name, "output");
-    assert_eq!(result.root.value, Some(Value::Null));
+    assert_eq!(first_mapped_node(&result).unwrap().name, "output");
+    assert_eq!(first_mapped_node(&result).unwrap().value, Some(Value::Null));
 }
 
 #[test]
@@ -549,5 +554,5 @@ rules:
     let result = runtime.execute(&mapping, &document).unwrap();
 
     // Should have produced output - verify mapping executed
-    assert_eq!(result.root.name, "processed_orders");
+    assert_eq!(first_mapped_node(&result).unwrap().name, "processed_orders");
 }

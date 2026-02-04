@@ -45,7 +45,7 @@ pub struct ErrorContext {
 }
 
 /// Category of error that caused quarantine
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ErrorCategory {
     /// Validation error
     Validation,
@@ -56,15 +56,17 @@ pub enum ErrorCategory {
     /// Timeout
     Timeout,
     /// Unknown error
+    #[default]
     Unknown,
 }
 
 /// Reason for quarantining a message
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QuarantineReason {
     /// Failed validation
     ValidationFailed,
     /// Processing error
+    #[default]
     ProcessingError,
     /// Policy violation
     PolicyViolation,
@@ -252,14 +254,13 @@ impl<T> QuarantineStore<T> {
 
     /// Remove a message from quarantine (successful retry)
     pub fn remove(&mut self, id: &str) -> Result<QuarantinedMessage<T>> {
-        self.messages
+        let message = self
+            .messages
             .remove(id)
-            .ok_or_else(|| Error::Quarantine(format!("Message not found: {}", id)))
-            .map(|msg| {
-                self.stats.current_count = self.messages.len();
-                self.stats.successful_retries += 1;
-                msg
-            })
+            .ok_or_else(|| Error::Quarantine(format!("Message not found: {}", id)))?;
+        self.stats.current_count = self.messages.len();
+        self.stats.successful_retries += 1;
+        Ok(message)
     }
 
     /// Mark a message as permanently failed
@@ -381,18 +382,6 @@ impl ErrorContext {
     pub fn with_position(mut self, position: impl Into<String>) -> Self {
         self.position = Some(position.into());
         self
-    }
-}
-
-impl Default for ErrorCategory {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
-impl Default for QuarantineReason {
-    fn default() -> Self {
-        Self::ProcessingError
     }
 }
 

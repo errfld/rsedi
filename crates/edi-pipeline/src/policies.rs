@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn test_policy_clone() {
         let policy = AcceptancePolicy::Quarantine;
-        let cloned = policy.clone();
+        let cloned = policy;
         assert_eq!(policy, cloned);
     }
 
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn test_strictness_clone() {
         let strictness = StrictnessLevel::Strict;
-        let cloned = strictness.clone();
+        let cloned = strictness;
         assert_eq!(strictness, cloned);
     }
 
