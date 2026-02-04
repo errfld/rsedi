@@ -3,7 +3,7 @@
 use crate::config::{CsvConfig, NullRepresentation};
 use crate::errors::{CsvError, CsvResult};
 use crate::schema::CsvSchema;
-use edi_ir::{Document, Node, Value};
+use edi_ir::{Document, Node, NodeType, Value};
 use std::io::Write;
 use tracing::{debug, trace, warn};
 
@@ -111,6 +111,8 @@ impl CsvWriter {
             .quote(self.config.quote_char_u8())
             .from_writer(writer);
 
+        let records = Self::records_from_root(&doc.root);
+
         // Collect headers from schema or infer from first record
         let headers = if let Some(schema) = &self.schema {
             schema
@@ -119,7 +121,7 @@ impl CsvWriter {
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>()
         } else {
-            self.infer_headers(&doc.root)
+            self.infer_headers(records)
         };
 
         if headers.is_empty() {
@@ -134,8 +136,8 @@ impl CsvWriter {
         }
 
         // Write records
-        for (idx, child) in doc.root.children.iter().enumerate() {
-            let row = self.node_to_row(child, &headers, idx)?;
+        for (idx, record) in records.iter().enumerate() {
+            let row = self.node_to_row(record, &headers, idx)?;
             csv_writer
                 .write_record(&row)
                 .map_err(|e| CsvError::write(e.to_string()))?;
@@ -161,9 +163,20 @@ impl CsvWriter {
         Ok(())
     }
 
-    fn infer_headers(&self, root: &Node) -> Vec<String> {
+    fn records_from_root(root: &Node) -> &[Node] {
+        if root.children.len() == 1
+            && root.children[0].node_type == NodeType::SegmentGroup
+            && !root.children[0].children.is_empty()
+        {
+            &root.children[0].children
+        } else {
+            &root.children
+        }
+    }
+
+    fn infer_headers(&self, records: &[Node]) -> Vec<String> {
         // Try to get headers from first child
-        if let Some(first_record) = root.children.first() {
+        if let Some(first_record) = records.first() {
             first_record
                 .children
                 .iter()

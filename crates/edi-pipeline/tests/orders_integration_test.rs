@@ -250,7 +250,11 @@ fn test_orders_multiple_line_items() {
     let mapped_doc = execute_mapping(&mapping, &doc);
 
     // Should have same number of output rows as line items
-    let output_count = mapped_doc.root.children.len();
+    let output_count = mapped_doc
+        .root
+        .children
+        .first()
+        .map_or(0, |container| container.children.len());
     assert_eq!(
         output_count, lin_count,
         "Should have one output row per line item"

@@ -6,6 +6,10 @@ use edi_ir::{Document, Node, NodeType, Value};
 use edi_mapping::{MappingDsl, MappingRuntime};
 use std::path::PathBuf;
 
+fn first_mapped_node(document: &Document) -> Option<&Node> {
+    document.root.children.first()
+}
+
 #[test]
 fn test_complex_conditional_logic_from_yaml() {
     let mapping_path =
@@ -35,10 +39,7 @@ fn test_complex_conditional_logic_from_yaml() {
 
     // Should produce output (structure depends on implementation)
     // The mapping should have executed successfully
-    assert!(
-        result1.root.name == "order_type" || !result1.root.children.is_empty(),
-        "Mapping should have produced output"
-    );
+    assert!(first_mapped_node(&result1).is_some(), "Mapping should have produced output");
 
     // Test with blanket order (type 221)
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -102,7 +103,7 @@ rules:
     let doc1 = Document::new(root1);
     let mut runtime = MappingRuntime::new();
     let result1 = runtime.execute(&mapping, &doc1).unwrap();
-    assert_eq!(result1.root.name, "urgent_order");
+    assert_eq!(first_mapped_node(&result1).unwrap().name, "urgent_order");
 
     // Only one condition met
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -165,7 +166,7 @@ rules:
     ));
     root1.add_child(order1);
     let result1 = runtime.execute(&mapping, &Document::new(root1)).unwrap();
-    assert_eq!(result1.root.name, "valid_order");
+    assert_eq!(first_mapped_node(&result1).unwrap().name, "valid_order");
 
     // Second condition met
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -182,7 +183,7 @@ rules:
     ));
     root2.add_child(order2);
     let result2 = runtime.execute(&mapping, &Document::new(root2)).unwrap();
-    assert_eq!(result2.root.name, "valid_order");
+    assert_eq!(first_mapped_node(&result2).unwrap().name, "valid_order");
 
     // Neither condition met
     let mut root3 = Node::new("ROOT", NodeType::Root);
@@ -240,7 +241,7 @@ rules:
     ));
     root1.add_child(order1);
     let result1 = runtime.execute(&mapping, &Document::new(root1)).unwrap();
-    assert_eq!(result1.root.name, "active_order");
+    assert_eq!(first_mapped_node(&result1).unwrap().name, "active_order");
 
     // Is cancelled - should not match
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -311,7 +312,7 @@ rules:
     let doc1 = Document::new(root1);
     let mut runtime = MappingRuntime::new();
     let result1 = runtime.execute(&mapping, &doc1).unwrap();
-    assert_eq!(result1.root.name, "important_order");
+    assert_eq!(first_mapped_node(&result1).unwrap().name, "important_order");
 
     // Exists + URGENT type + Customer exists
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -335,7 +336,7 @@ rules:
 
     let doc2 = Document::new(root2);
     let result2 = runtime.execute(&mapping, &doc2).unwrap();
-    assert_eq!(result2.root.name, "important_order");
+    assert_eq!(first_mapped_node(&result2).unwrap().name, "important_order");
 
     // Exists + URGENT type but no customer
     let mut root3 = Node::new("ROOT", NodeType::Root);
@@ -393,7 +394,7 @@ rules:
     ));
     root1.add_child(order1);
     let result1 = runtime.execute(&mapping, &Document::new(root1)).unwrap();
-    assert_eq!(result1.root.name, "rush_order");
+    assert_eq!(first_mapped_node(&result1).unwrap().name, "rush_order");
 
     // Does not contain "urgent"
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -445,10 +446,7 @@ rules:
     root1.add_child(order1);
     let result1 = runtime.execute(&mapping, &Document::new(root1)).unwrap();
     // Check that the condition matched and produced output
-    assert!(
-        !result1.root.children.is_empty() || result1.root.name != "OUTPUT",
-        "Condition should have matched and produced output"
-    );
+    assert!(first_mapped_node(&result1).is_some(), "Condition should have matched and produced output");
 
     // Does not match pattern
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -513,7 +511,7 @@ rules:
     ));
     root1.add_child(order1);
     let result1 = runtime.execute(&mapping, &Document::new(root1)).unwrap();
-    assert_eq!(result1.root.name, "type_a_order");
+    assert_eq!(first_mapped_node(&result1).unwrap().name, "type_a_order");
 
     // Type B
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -530,7 +528,7 @@ rules:
     ));
     root2.add_child(order2);
     let result2 = runtime.execute(&mapping, &Document::new(root2)).unwrap();
-    assert_eq!(result2.root.name, "type_b_order");
+    assert_eq!(first_mapped_node(&result2).unwrap().name, "type_b_order");
 
     // Other type
     let mut root3 = Node::new("ROOT", NodeType::Root);
@@ -547,7 +545,7 @@ rules:
     ));
     root3.add_child(order3);
     let result3 = runtime.execute(&mapping, &Document::new(root3)).unwrap();
-    assert_eq!(result3.root.name, "other_order");
+    assert_eq!(first_mapped_node(&result3).unwrap().name, "other_order");
 }
 
 #[test]
@@ -640,7 +638,7 @@ rules:
 
     // Verify the foreach executed (structure may vary based on implementation)
     // Items should be processed, but structure depends on how conditions are evaluated
-    assert_eq!(result.root.name, "valid_items");
+    assert_eq!(first_mapped_node(&result).unwrap().name, "valid_items");
     // The implementation may filter differently, so just verify we got some output
 }
 
@@ -677,7 +675,7 @@ rules:
     let result = runtime.execute(&mapping, &document).unwrap();
 
     // Empty AND should be vacuously true
-    assert_eq!(result.root.name, "result");
+    assert_eq!(first_mapped_node(&result).unwrap().name, "result");
 }
 
 #[test]
@@ -733,5 +731,5 @@ rules:
     ));
     root2.add_child(order2);
     let result2 = runtime.execute(&mapping, &Document::new(root2)).unwrap();
-    assert_eq!(result2.root.name, "has_description");
+    assert_eq!(first_mapped_node(&result2).unwrap().name, "has_description");
 }
