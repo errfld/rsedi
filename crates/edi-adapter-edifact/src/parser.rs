@@ -8,6 +8,7 @@ use crate::syntax::{Separators, SyntaxBuffer};
 use crate::{Error, Result};
 use edi_ir::document::DocumentMetadata;
 use edi_ir::{Document, Node, NodeType, Position, Value};
+use tracing::warn;
 
 /// A parsed EDIFACT segment
 #[derive(Debug, Clone)]
@@ -27,6 +28,36 @@ pub enum Element {
     Simple(Vec<u8>),
     /// Composite element (multiple components)
     Composite(Vec<Vec<u8>>),
+}
+
+/// Non-fatal parser warning emitted while parsing EDIFACT data.
+#[derive(Debug, Clone)]
+pub struct ParseWarning {
+    /// Warning message describing what happened.
+    pub message: String,
+    /// Position in the source where the warning occurred.
+    pub position: Position,
+    /// Message reference from UNH when available.
+    pub message_ref: Option<String>,
+}
+
+impl ParseWarning {
+    fn missing_unt(position: Position, message_ref: Option<String>) -> Self {
+        Self {
+            message: "Created partial message at EOF because UNT segment is missing".to_string(),
+            position,
+            message_ref,
+        }
+    }
+}
+
+/// Parse output that includes parsed documents and non-fatal warnings.
+#[derive(Debug, Clone, Default)]
+pub struct ParseOutcome {
+    /// Parsed EDIFACT messages.
+    pub documents: Vec<Document>,
+    /// Non-fatal warnings collected during parsing.
+    pub warnings: Vec<ParseWarning>,
 }
 
 impl Segment {
@@ -281,6 +312,12 @@ impl<'a> SegmentParser<'a> {
     pub fn remaining(&self) -> &[u8] {
         &self.buffer.data[self.buffer.position()..]
     }
+
+    /// Current parser position in the source.
+    pub fn current_position(&self) -> Position {
+        let (line, column) = self.buffer.line_column();
+        Position::new(line, column, self.buffer.position(), 0)
+    }
 }
 
 /// Streaming EDIFACT parser that yields messages one at a time
@@ -295,7 +332,32 @@ impl EdifactParser {
     /// Parse a complete EDIFACT document and return all messages
     pub fn parse(&self, data: &[u8], source_name: impl Into<String>) -> Result<Vec<Document>> {
         let source_name = source_name.into();
+        let outcome = self.parse_with_warnings(data, &source_name)?;
+
+        for warning in &outcome.warnings {
+            warn!(
+                source = %source_name,
+                message_ref = warning.message_ref.as_deref().unwrap_or("unknown"),
+                line = warning.position.line,
+                column = warning.position.column,
+                offset = warning.position.offset,
+                "{}",
+                warning.message
+            );
+        }
+
+        Ok(outcome.documents)
+    }
+
+    /// Parse a complete EDIFACT document and return all messages plus warnings.
+    pub fn parse_with_warnings(
+        &self,
+        data: &[u8],
+        source_name: impl Into<String>,
+    ) -> Result<ParseOutcome> {
+        let source_name = source_name.into();
         let mut documents = Vec::new();
+        let mut warnings = Vec::new();
 
         // Parse segments
         let mut parser = SegmentParser::new(data, &source_name);
@@ -351,14 +413,28 @@ impl EdifactParser {
             }
         }
 
+        let eof_position = parser.current_position();
+
         // Handle case where file doesn't end with UNT (malformed)
         if !current_segments.is_empty() {
-            if let Some(doc) = self.build_message(&current_segments) {
+            let has_unh = current_segments.iter().any(|segment| segment.tag == "UNH");
+            let has_unt = current_segments.iter().any(|segment| segment.tag == "UNT");
+
+            if has_unh && !has_unt {
+                if let Some(doc) = self.build_partial_message(&current_segments) {
+                    let message_ref = doc.metadata.message_refs.first().cloned();
+                    documents.push(doc);
+                    warnings.push(ParseWarning::missing_unt(eof_position, message_ref));
+                }
+            } else if let Some(doc) = self.build_message(&current_segments) {
                 documents.push(doc);
             }
         }
 
-        Ok(documents)
+        Ok(ParseOutcome {
+            documents,
+            warnings,
+        })
     }
 
     /// Parse a single message from a byte slice
@@ -386,7 +462,18 @@ impl EdifactParser {
         let unh_pos = segments.iter().position(|s| s.tag == "UNH")?;
         let unt_pos = segments.iter().position(|s| s.tag == "UNT")?;
 
-        let message_segments = &segments[unh_pos..=unt_pos];
+        self.build_document(&segments[unh_pos..=unt_pos])
+    }
+
+    fn build_partial_message(&self, segments: &[Segment]) -> Option<Document> {
+        let unh_pos = segments.iter().position(|s| s.tag == "UNH")?;
+        self.build_document(&segments[unh_pos..])
+    }
+
+    fn build_document(&self, message_segments: &[Segment]) -> Option<Document> {
+        if message_segments.is_empty() {
+            return None;
+        }
 
         let (message_type, version, message_ref) = Self::message_info(message_segments);
 
@@ -839,5 +926,38 @@ UNT+7+1'";
             }
             _ => panic!("Expected parse error"),
         }
+    }
+
+    #[test]
+    fn test_parse_missing_unt_returns_partial_document_and_warning() {
+        let data = b"UNH+1+ORDERS:D:96A:UN'BGM+220+12345+9'";
+        let parser = EdifactParser::new();
+
+        let outcome = parser.parse_with_warnings(data, "test").unwrap();
+
+        assert_eq!(outcome.documents.len(), 1);
+        assert_eq!(
+            outcome.documents[0].metadata.doc_type,
+            Some("ORDERS".to_string())
+        );
+        assert_eq!(
+            outcome.documents[0]
+                .metadata
+                .message_refs
+                .first()
+                .map(String::as_str),
+            Some("1")
+        );
+
+        assert_eq!(outcome.warnings.len(), 1);
+        let warning = &outcome.warnings[0];
+        assert!(warning.message.contains("UNT"));
+        assert_eq!(warning.message_ref.as_deref(), Some("1"));
+        assert_eq!(warning.position.line, 1);
+        assert_eq!(warning.position.column, data.len() + 1);
+        assert_eq!(warning.position.offset, data.len());
+
+        let docs = parser.parse(data, "test").unwrap();
+        assert_eq!(docs.len(), 1);
     }
 }

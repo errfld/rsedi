@@ -23,19 +23,22 @@ pub enum StrictnessLevel {
 
 impl StrictnessLevel {
     /// Determine if an error should fail validation based on strictness
-    pub fn should_fail(&self, _severity: Severity) -> bool {
-        match self {
-            StrictnessLevel::Strict => true,
-            StrictnessLevel::Moderate => true, // Still fail on errors
-            StrictnessLevel::Lenient => false,
-        }
+    pub fn should_fail(&self, severity: Severity) -> bool {
+        matches!(self.effective_severity(severity), Severity::Error)
     }
 
     /// Determine the effective severity based on strictness
     pub fn effective_severity(&self, severity: Severity) -> Severity {
-        match (self, severity) {
-            (StrictnessLevel::Lenient, Severity::Error) => Severity::Warning,
-            _ => severity,
+        match self {
+            StrictnessLevel::Strict => match severity {
+                Severity::Warning => Severity::Error,
+                _ => severity,
+            },
+            StrictnessLevel::Moderate => severity,
+            StrictnessLevel::Lenient => match severity {
+                Severity::Error => Severity::Warning,
+                _ => severity,
+            },
         }
     }
 }
@@ -297,7 +300,11 @@ impl ValidationEngine {
         let context = ValidationContext::root();
 
         // Validate the root node
-        self.validate_node(&doc.root, &mut result, &context);
+        let _ = self.validate_node(&doc.root, &mut result, &context);
+        if self.should_stop(&result) {
+            self.apply_strictness(&mut result);
+            return Ok(result);
+        }
 
         // Collect all segments for rule validation
         let mut segments = Vec::new();
@@ -309,6 +316,10 @@ impl ValidationEngine {
             if !order_result.is_valid {
                 if let Some(msg) = order_result.message {
                     self.add_error(&mut result, &context, "SEGMENT_ORDER_VIOLATION", msg);
+                    if self.should_stop(&result) {
+                        self.apply_strictness(&mut result);
+                        return Ok(result);
+                    }
                 }
             }
         }
@@ -320,6 +331,10 @@ impl ValidationEngine {
                 if !conditional_result.is_valid {
                     if let Some(msg) = conditional_result.message {
                         self.add_error(&mut result, &context, "CONDITIONAL_RULE_VIOLATION", msg);
+                        if self.should_stop(&result) {
+                            self.apply_strictness(&mut result);
+                            return Ok(result);
+                        }
                     }
                 }
             }
@@ -379,6 +394,9 @@ impl ValidationEngine {
                     segment_def.tag, segment.name
                 ),
             );
+            if self.should_stop(&result) {
+                return Ok(result);
+            }
         }
 
         // Validate mandatory status
@@ -389,6 +407,9 @@ impl ValidationEngine {
                 "MANDATORY_SEGMENT_EMPTY",
                 format!("Mandatory segment '{}' has no elements", segment_def.tag),
             );
+            if self.should_stop(&result) {
+                return Ok(result);
+            }
         }
 
         // Validate each element against its definition
@@ -402,6 +423,9 @@ impl ValidationEngine {
             let element_result =
                 self.validate_element_internal(child, element_def, &element_context)?;
             result.merge(element_result);
+            if self.should_stop(&result) {
+                return Ok(result);
+            }
         }
 
         // Check for extra elements not in definition
@@ -422,6 +446,9 @@ impl ValidationEngine {
                         extra.name, idx
                     ),
                 );
+                if self.should_stop(&result) {
+                    return Ok(result);
+                }
             }
         }
 
@@ -438,6 +465,9 @@ impl ValidationEngine {
                         element_def.id, element_def.name, idx
                     ),
                 );
+                if self.should_stop(&result) {
+                    return Ok(result);
+                }
             }
         }
 
@@ -474,6 +504,9 @@ impl ValidationEngine {
                     element_def.id, element.name
                 ),
             );
+            if self.should_stop(&result) {
+                return Ok(result);
+            }
         }
 
         // Get the value to validate
@@ -492,6 +525,9 @@ impl ValidationEngine {
                     element_def.id, element_def.name
                 ),
             );
+            if self.should_stop(&result) {
+                return Ok(result);
+            }
         }
 
         // Validate length constraints if value exists
@@ -507,6 +543,9 @@ impl ValidationEngine {
                         element_def.id, len, element_def.min_length, element_def.data_type
                     ),
                 );
+                if self.should_stop(&result) {
+                    return Ok(result);
+                }
             }
             if len > element_def.max_length {
                 self.add_error(
@@ -518,11 +557,17 @@ impl ValidationEngine {
                         element_def.id, len, element_def.max_length, element_def.data_type
                     ),
                 );
+                if self.should_stop(&result) {
+                    return Ok(result);
+                }
             }
 
             // Validate data type
             if let Err(msg) = self.validate_data_type_for_element(value, element_def) {
                 self.add_error(&mut result, context, "DATA_TYPE_VIOLATION", msg);
+                if self.should_stop(&result) {
+                    return Ok(result);
+                }
             }
 
             // Validate against codelist if configured
@@ -535,6 +580,9 @@ impl ValidationEngine {
                     if !validation_result.is_valid() {
                         if let Some(msg) = validation_result.error_message() {
                             self.add_error(&mut result, context, "CODELIST_VIOLATION", msg);
+                            if self.should_stop(&result) {
+                                return Ok(result);
+                            }
                         }
                     }
                 }
@@ -545,6 +593,9 @@ impl ValidationEngine {
         for (idx, child) in element.children.iter().enumerate() {
             let component_context = context.child(&child.name).with_component_pos(idx);
             self.validate_component(child, &mut result, &component_context)?;
+            if self.should_stop(&result) {
+                return Ok(result);
+            }
         }
 
         Ok(result)
@@ -564,6 +615,9 @@ impl ValidationEngine {
                 "EXPECTED_COMPONENT",
                 format!("Expected Component, found {:?}", component.node_type),
             );
+            if self.should_stop(result) {
+                return Ok(());
+            }
         }
 
         // Check for null values in strict mode
@@ -578,6 +632,9 @@ impl ValidationEngine {
                         component.name
                     ),
                 );
+                if self.should_stop(result) {
+                    return Ok(());
+                }
             }
         }
 
@@ -602,6 +659,9 @@ impl ValidationEngine {
             if !order_result.is_valid {
                 if let Some(msg) = order_result.message {
                     self.add_error(result, context, "SEGMENT_ORDER_VIOLATION", msg);
+                    if self.should_stop(result) {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -619,6 +679,9 @@ impl ValidationEngine {
                 for issue in segment_result.report.all_issues() {
                     result.add_issue(issue.clone());
                 }
+                if self.should_stop(result) {
+                    return Ok(());
+                }
             } else {
                 // Segment not found in schema
                 self.add_warning(
@@ -631,6 +694,9 @@ impl ValidationEngine {
                         schema.qualified_name()
                     ),
                 );
+                if self.should_stop(result) {
+                    return Ok(());
+                }
             }
         }
 
@@ -648,6 +714,9 @@ impl ValidationEngine {
                             segment_def.tag
                         ),
                     );
+                    if self.should_stop(result) {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -659,6 +728,9 @@ impl ValidationEngine {
                 if !conditional_result.is_valid {
                     if let Some(msg) = conditional_result.message {
                         self.add_error(result, context, "CONDITIONAL_RULE_VIOLATION", msg);
+                        if self.should_stop(result) {
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -673,13 +745,11 @@ impl ValidationEngine {
         node: &Node,
         result: &mut ValidationResult,
         context: &ValidationContext,
-    ) {
+    ) -> bool {
         match node.node_type {
-            NodeType::Segment => {
-                self.validate_segment_node(node, result, context);
-            }
+            NodeType::Segment => self.validate_segment_node(node, result, context),
             NodeType::Element | NodeType::Component => {
-                self.validate_element_node(node, result, context);
+                self.validate_element_node(node, result, context)
             }
             _ => {
                 // Recursively validate children
@@ -691,8 +761,11 @@ impl ValidationEngine {
                     } else {
                         context.child(&child.name)
                     };
-                    self.validate_node(child, result, &child_context);
+                    if !self.validate_node(child, result, &child_context) {
+                        return false;
+                    }
                 }
+                true
             }
         }
     }
@@ -716,7 +789,7 @@ impl ValidationEngine {
         segment: &Node,
         result: &mut ValidationResult,
         context: &ValidationContext,
-    ) {
+    ) -> bool {
         // Check for empty segment
         if segment.children.is_empty() {
             self.add_warning(
@@ -725,13 +798,20 @@ impl ValidationEngine {
                 "EMPTY_SEGMENT",
                 format!("Segment '{}' has no elements", segment.name),
             );
+            if self.should_stop(result) {
+                return false;
+            }
         }
 
         // Validate each element
         for (idx, child) in segment.children.iter().enumerate() {
             let element_context = context.child(&child.name).with_element_pos(idx);
-            self.validate_element_node(child, result, &element_context);
+            if !self.validate_element_node(child, result, &element_context) {
+                return false;
+            }
         }
+
+        true
     }
 
     /// Validate an element node without schema
@@ -740,7 +820,7 @@ impl ValidationEngine {
         element: &Node,
         result: &mut ValidationResult,
         context: &ValidationContext,
-    ) {
+    ) -> bool {
         // Check if value is present
         if let Some(ref value) = element.value {
             if value.is_null() && self.config.strictness == StrictnessLevel::Strict {
@@ -750,14 +830,21 @@ impl ValidationEngine {
                     "NULL_VALUE",
                     format!("Element '{}' has null value in strict mode", element.name),
                 );
+                if self.should_stop(result) {
+                    return false;
+                }
             }
         }
 
         // Validate component children
         for (idx, child) in element.children.iter().enumerate() {
             let component_context = context.child(&child.name).with_component_pos(idx);
-            self.validate_element_node(child, result, &component_context);
+            if !self.validate_element_node(child, result, &component_context) {
+                return false;
+            }
         }
+
+        true
     }
 
     /// Validate data type for an element
@@ -837,40 +924,37 @@ impl ValidationEngine {
         code: &str,
         message: String,
     ) {
-        let issue = ValidationIssue::new(Severity::Warning, message)
+        let severity = self.config.strictness.effective_severity(Severity::Warning);
+
+        let issue = ValidationIssue::new(severity, message)
             .with_path(&context.path)
             .with_code(code);
 
         result.add_issue(issue);
+
+        if self.config.strictness.should_fail(Severity::Warning) {
+            result.is_valid = false;
+        }
     }
 
     /// Apply strictness rules to the final result
     fn apply_strictness(&self, result: &mut ValidationResult) {
-        match self.config.strictness {
-            StrictnessLevel::Strict => {
-                // Any error makes it invalid
-                if result.has_errors() {
-                    result.is_valid = false;
-                }
-            }
-            StrictnessLevel::Moderate => {
-                // Keep current validity based on errors
-                result.is_valid = !result.has_errors();
-            }
-            StrictnessLevel::Lenient => {
-                // More permissive - only critical errors fail
-                result.is_valid = true;
-            }
-        }
+        result.is_valid = !result.has_errors();
+    }
+
+    fn error_count(&self, result: &ValidationResult) -> usize {
+        result.errors.len() + result.report.count_by_severity(Severity::Error)
     }
 
     /// Check if validation should stop due to max errors
-    #[allow(dead_code)]
     fn should_stop(&self, result: &ValidationResult) -> bool {
-        if self.config.max_errors == 0 {
-            return false;
+        let error_count = self.error_count(result);
+
+        if !self.config.continue_on_error && error_count > 0 {
+            return true;
         }
-        result.errors.len() >= self.config.max_errors
+
+        self.config.max_errors > 0 && error_count >= self.config.max_errors
     }
 }
 
@@ -964,6 +1048,18 @@ mod tests {
         ])
     }
 
+    fn create_document_with_null_elements(count: usize) -> Document {
+        let mut root = Node::new("ROOT", NodeType::Root);
+        for index in 0..count {
+            root.add_child(Node::with_value(
+                format!("FIELD{index}"),
+                NodeType::Element,
+                Value::Null,
+            ));
+        }
+        Document::new(root)
+    }
+
     #[test]
     fn test_validate_document() {
         let doc = create_test_document();
@@ -1051,6 +1147,8 @@ mod tests {
             .validate_element(&element, &element_def)
             .unwrap();
         assert!(!result.is_valid);
+        assert_eq!(result.report.count_by_severity(Severity::Error), 1);
+        assert_eq!(result.report.count_by_severity(Severity::Warning), 0);
 
         // Test Moderate mode
         let moderate_engine = ValidationEngine::with_config(ValidationConfig {
@@ -1061,6 +1159,8 @@ mod tests {
             .validate_element(&element, &element_def)
             .unwrap();
         assert!(!result.is_valid);
+        assert_eq!(result.report.count_by_severity(Severity::Error), 1);
+        assert_eq!(result.report.count_by_severity(Severity::Warning), 0);
 
         // Test Lenient mode
         let lenient_engine = ValidationEngine::with_config(ValidationConfig {
@@ -1070,29 +1170,14 @@ mod tests {
         let result = lenient_engine
             .validate_element(&element, &element_def)
             .unwrap();
-        // Lenient mode may still report issues but might consider valid
-        assert!(result.is_valid || result.has_errors());
+        assert!(result.is_valid);
+        assert_eq!(result.report.count_by_severity(Severity::Error), 0);
+        assert_eq!(result.report.count_by_severity(Severity::Warning), 1);
     }
 
     #[test]
     fn test_partial_validation() {
-        let mut root = Node::new("ROOT", NodeType::Root);
-
-        // Create multiple segments, some valid, some with issues
-        let mut segment1 = Node::new("SEG1", NodeType::Segment);
-        segment1.add_child(Node::with_value(
-            "FIELD",
-            NodeType::Element,
-            Value::String("valid".to_string()),
-        ));
-
-        let mut segment2 = Node::new("SEG2", NodeType::Segment);
-        segment2.add_child(Node::with_value("FIELD", NodeType::Element, Value::Null));
-
-        root.add_child(segment1);
-        root.add_child(segment2);
-
-        let doc = Document::new(root);
+        let doc = create_document_with_null_elements(2);
 
         // Continue on error mode
         let engine_continue = ValidationEngine::with_config(ValidationConfig {
@@ -1102,31 +1187,70 @@ mod tests {
         });
 
         let result = engine_continue.validate(&doc).unwrap();
-        // Should process all segments and collect errors
-        assert!(!result.is_valid || result.has_errors());
+        assert!(!result.is_valid);
+        assert_eq!(result.report.count_by_severity(Severity::Error), 2);
     }
 
     #[test]
     fn test_stop_on_first_error() {
-        let mut root = Node::new("ROOT", NodeType::Root);
-
-        let mut segment1 = Node::new("SEG1", NodeType::Segment);
-        segment1.add_child(Node::with_value("FIELD", NodeType::Element, Value::Null));
-
-        root.add_child(segment1);
-
-        let doc = Document::new(root);
+        let doc = create_document_with_null_elements(3);
 
         // Stop on first error mode
         let engine_stop = ValidationEngine::with_config(ValidationConfig {
             continue_on_error: false,
             strictness: StrictnessLevel::Strict,
-            max_errors: 1,
             ..Default::default()
         });
 
         let result = engine_stop.validate(&doc).unwrap();
         assert!(!result.is_valid);
+        assert_eq!(result.report.count_by_severity(Severity::Error), 1);
+    }
+
+    #[test]
+    fn test_max_errors_limits_collected_errors() {
+        let doc = create_document_with_null_elements(3);
+
+        let engine = ValidationEngine::with_config(ValidationConfig {
+            continue_on_error: true,
+            max_errors: 2,
+            strictness: StrictnessLevel::Strict,
+            ..Default::default()
+        });
+
+        let result = engine.validate(&doc).unwrap();
+        assert!(!result.is_valid);
+        assert_eq!(result.report.count_by_severity(Severity::Error), 2);
+    }
+
+    #[test]
+    fn test_strict_mode_escalates_warnings_to_errors() {
+        let mut root = Node::new("ROOT", NodeType::Root);
+        root.add_child(Node::new("SEG", NodeType::Segment));
+        let doc = Document::new(root);
+
+        let strict_engine = ValidationEngine::with_config(ValidationConfig {
+            strictness: StrictnessLevel::Strict,
+            ..Default::default()
+        });
+
+        let strict_result = strict_engine.validate(&doc).unwrap();
+        assert!(!strict_result.is_valid);
+        assert_eq!(strict_result.report.count_by_severity(Severity::Error), 1);
+        assert_eq!(strict_result.report.count_by_severity(Severity::Warning), 0);
+
+        let moderate_engine = ValidationEngine::with_config(ValidationConfig {
+            strictness: StrictnessLevel::Moderate,
+            ..Default::default()
+        });
+
+        let moderate_result = moderate_engine.validate(&doc).unwrap();
+        assert!(moderate_result.is_valid);
+        assert_eq!(moderate_result.report.count_by_severity(Severity::Error), 0);
+        assert_eq!(
+            moderate_result.report.count_by_severity(Severity::Warning),
+            1
+        );
     }
 
     #[test]
@@ -1397,6 +1521,10 @@ mod tests {
     fn test_strictness_level_effective_severity() {
         assert_eq!(
             StrictnessLevel::Strict.effective_severity(Severity::Error),
+            Severity::Error
+        );
+        assert_eq!(
+            StrictnessLevel::Strict.effective_severity(Severity::Warning),
             Severity::Error
         );
         assert_eq!(
