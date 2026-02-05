@@ -7,7 +7,7 @@ use crate::connection::DbConnection;
 use crate::schema::{DbValue, Row, SchemaMapping};
 
 /// Writer facade.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DbWriter {
     connection: DbConnection,
 }
@@ -49,7 +49,7 @@ impl DbWriter {
     pub async fn write_with_transaction(&self, table: &str, rows: &[Row]) -> Result<usize> {
         let mut tx = self.connection.begin_transaction().await?;
         for row in rows {
-            tx.insert_row(table, row.clone())?;
+            tx.insert_row(table, row.clone()).await?;
         }
         tx.commit().await?;
         Ok(rows.len())
@@ -121,9 +121,19 @@ mod tests {
         row
     }
 
+    fn sample_schema() -> SchemaMapping {
+        let table = TableSchema::new("orders")
+            .with_column(ColumnDef::new("id", ColumnType::Integer).primary_key())
+            .with_column(ColumnDef::new("order_no", ColumnType::String));
+        let mut schema = SchemaMapping::new();
+        schema.add_table(table);
+        schema
+    }
+
     async fn setup_writer() -> (DbConnection, DbWriter) {
         let connection = DbConnection::new();
         connection.connect().await.unwrap();
+        connection.apply_schema(&sample_schema()).await.unwrap();
         let writer = DbWriter::new(connection.clone());
         (connection, writer)
     }
@@ -275,6 +285,6 @@ mod tests {
         row.insert("order_no".to_string(), DbValue::String("PO-1".to_string()));
 
         let err = writer.upsert("orders", "id", row).await.unwrap_err();
-        assert!(matches!(err, Error::Query(_)));
+        assert!(matches!(err, Error::Query { .. }));
     }
 }

@@ -103,39 +103,53 @@ impl TableSchema {
         self.columns.iter().find(|column| column.primary_key)
     }
 
+    pub fn create_table_sql(&self) -> String {
+        let columns: Vec<String> = self
+            .columns
+            .iter()
+            .map(|column| column_definition_sql(column))
+            .collect();
+
+        format!(
+            "CREATE TABLE IF NOT EXISTS {} ({})",
+            quote_identifier(&self.name),
+            columns.join(", ")
+        )
+    }
+
     pub fn validate_row(&self, row: &Row) -> Result<()> {
         for (column_name, value) in row {
-            let column = self.column(column_name).ok_or_else(|| {
-                Error::Schema(format!(
-                    "Unknown column '{column_name}' for table '{}'",
-                    self.name
-                ))
+            let column = self.column(column_name).ok_or_else(|| Error::Schema {
+                details: format!("Unknown column '{column_name}' for table '{}'", self.name),
             })?;
 
             if matches!(value, DbValue::Null) {
                 if !column.nullable {
-                    return Err(Error::Schema(format!(
-                        "Column '{column_name}' in table '{}' cannot be null",
-                        self.name
-                    )));
+                    return Err(Error::Schema {
+                        details: format!(
+                            "Column '{column_name}' in table '{}' cannot be null",
+                            self.name
+                        ),
+                    });
                 }
                 continue;
             }
 
             if !value_matches_type(value, column.column_type) {
-                return Err(Error::Schema(format!(
-                    "Type mismatch for '{}.{}': expected {:?}, found {:?}",
-                    self.name, column_name, column.column_type, value
-                )));
+                return Err(Error::Schema {
+                    details: format!(
+                        "Type mismatch for '{}.{}': expected {:?}, found {:?}",
+                        self.name, column_name, column.column_type, value
+                    ),
+                });
             }
         }
 
         for column in &self.columns {
             if !column.nullable && !row.contains_key(&column.name) {
-                return Err(Error::Schema(format!(
-                    "Missing required column '{}.{}'",
-                    self.name, column.name
-                )));
+                return Err(Error::Schema {
+                    details: format!("Missing required column '{}.{}'", self.name, column.name),
+                });
             }
         }
 
@@ -166,12 +180,55 @@ impl SchemaMapping {
         self.tables.keys().map(String::as_str).collect()
     }
 
+    pub fn tables(&self) -> impl Iterator<Item = &TableSchema> {
+        self.tables.values()
+    }
+
     pub fn validate_row(&self, table_name: &str, row: &Row) -> Result<()> {
-        let schema = self
-            .table(table_name)
-            .ok_or_else(|| Error::Schema(format!("Unknown table '{table_name}'")))?;
+        let schema = self.table(table_name).ok_or_else(|| Error::Schema {
+            details: format!("Unknown table '{table_name}'"),
+        })?;
         schema.validate_row(row)
     }
+}
+
+fn column_definition_sql(column: &ColumnDef) -> String {
+    let mut parts = vec![
+        quote_identifier(&column.name),
+        column_type_sql(column.column_type).to_string(),
+    ];
+
+    if !column.nullable {
+        parts.push("NOT NULL".to_string());
+    }
+
+    if column.primary_key {
+        parts.push("PRIMARY KEY".to_string());
+    }
+
+    if let Some(foreign_key) = &column.foreign_key {
+        parts.push(format!(
+            "REFERENCES {}({})",
+            quote_identifier(&foreign_key.table),
+            quote_identifier(&foreign_key.column)
+        ));
+    }
+
+    parts.join(" ")
+}
+
+fn column_type_sql(column_type: ColumnType) -> &'static str {
+    match column_type {
+        ColumnType::String => "TEXT",
+        ColumnType::Integer => "INTEGER",
+        ColumnType::Decimal => "REAL",
+        ColumnType::Boolean => "BOOLEAN",
+    }
+}
+
+fn quote_identifier(value: &str) -> String {
+    let escaped = value.replace('\"', "\"\"");
+    format!("\"{}\"", escaped)
 }
 
 fn value_matches_type(value: &DbValue, column_type: ColumnType) -> bool {

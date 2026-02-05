@@ -32,7 +32,7 @@ impl QueryOptions {
 }
 
 /// Reader facade.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DbReader {
     connection: DbConnection,
 }
@@ -71,7 +71,21 @@ impl DbReader {
         options: &QueryOptions,
         schema_mapping: &SchemaMapping,
     ) -> Result<Vec<Row>> {
-        let rows = self.read_with_options(table, options).await?;
+        let schema = schema_mapping
+            .table(table)
+            .ok_or_else(|| crate::Error::Schema {
+                details: format!("Unknown table '{table}'"),
+            })?;
+        let rows = self
+            .connection
+            .select_rows_with_schema(
+                table,
+                options.filter.as_ref(),
+                options.offset,
+                options.limit,
+                Some(schema),
+            )
+            .await?;
         for row in &rows {
             schema_mapping.validate_row(table, row)?;
         }
@@ -124,9 +138,19 @@ mod tests {
         row
     }
 
+    fn sample_schema() -> SchemaMapping {
+        let table = TableSchema::new("orders")
+            .with_column(ColumnDef::new("id", ColumnType::Integer).primary_key())
+            .with_column(ColumnDef::new("order_no", ColumnType::String));
+        let mut schema = SchemaMapping::new();
+        schema.add_table(table);
+        schema
+    }
+
     async fn setup_reader() -> (DbConnection, DbReader) {
         let connection = DbConnection::new();
         connection.connect().await.unwrap();
+        connection.apply_schema(&sample_schema()).await.unwrap();
         connection
             .insert_row("orders", order_row(1, "PO-1"))
             .await

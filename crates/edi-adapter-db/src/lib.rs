@@ -20,17 +20,34 @@ use thiserror::Error;
 /// Errors that can occur when working with the database.
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Connection error: {0}")]
-    Connection(String),
+    #[error("Configuration error: {details}")]
+    Config { details: String },
 
-    #[error("Query error: {0}")]
-    Query(String),
+    #[error("Connection error: {details}")]
+    Connection { details: String },
 
-    #[error("Schema error: {0}")]
-    Schema(String),
+    #[error("Libsql error during {context}: {source}")]
+    Libsql {
+        context: String,
+        #[source]
+        source: libsql::Error,
+    },
 
-    #[error("Transaction error: {0}")]
-    Transaction(String),
+    #[error("SQL error executing `{statement}`: {source}")]
+    Sql {
+        statement: String,
+        #[source]
+        source: libsql::Error,
+    },
+
+    #[error("Query error on `{table}`: {details}")]
+    Query { table: String, details: String },
+
+    #[error("Schema error: {details}")]
+    Schema { details: String },
+
+    #[error("Transaction error: {details}")]
+    Transaction { details: String },
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

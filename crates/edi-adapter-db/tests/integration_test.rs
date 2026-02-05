@@ -1,4 +1,7 @@
-use edi_adapter_db::{DbConnection, DbReader, DbValue, DbWriter, QueryOptions, Row};
+use edi_adapter_db::{
+    ColumnDef, ColumnType, DbConnection, DbReader, DbValue, DbWriter, QueryOptions, Row,
+    SchemaMapping, TableSchema,
+};
 
 fn order_row(id: i64, order_no: &str) -> Row {
     let mut row = Row::new();
@@ -10,10 +13,20 @@ fn order_row(id: i64, order_no: &str) -> Row {
     row
 }
 
+fn sample_schema() -> SchemaMapping {
+    let table = TableSchema::new("orders")
+        .with_column(ColumnDef::new("id", ColumnType::Integer).primary_key())
+        .with_column(ColumnDef::new("order_no", ColumnType::String));
+    let mut schema = SchemaMapping::new();
+    schema.add_table(table);
+    schema
+}
+
 #[tokio::test]
 async fn test_full_read_write_cycle() {
     let connection = DbConnection::new();
     connection.connect().await.unwrap();
+    connection.apply_schema(&sample_schema()).await.unwrap();
 
     let writer = DbWriter::new(connection.clone());
     let reader = DbReader::new(connection.clone());
@@ -37,6 +50,7 @@ async fn test_write_from_ir_and_read_back() {
 
     let connection = DbConnection::new();
     connection.connect().await.unwrap();
+    connection.apply_schema(&sample_schema()).await.unwrap();
 
     let writer = DbWriter::new(connection.clone());
     let reader = DbReader::new(connection);
@@ -59,4 +73,36 @@ async fn test_write_from_ir_and_read_back() {
 
     let rows = reader.read_table("orders").await.unwrap();
     assert_eq!(rows.len(), 3);
+}
+
+#[tokio::test]
+async fn test_read_with_schema_typed_values() {
+    let connection = DbConnection::new();
+    connection.connect().await.unwrap();
+
+    let table = TableSchema::new("flags")
+        .with_column(ColumnDef::new("id", ColumnType::Integer).primary_key())
+        .with_column(ColumnDef::new("is_priority", ColumnType::Boolean))
+        .with_column(ColumnDef::new("total", ColumnType::Decimal));
+    let mut schema = SchemaMapping::new();
+    schema.add_table(table);
+
+    connection.apply_schema(&schema).await.unwrap();
+
+    let writer = DbWriter::new(connection.clone());
+    let reader = DbReader::new(connection);
+
+    let mut row = Row::new();
+    row.insert("id".to_string(), DbValue::Integer(1));
+    row.insert("is_priority".to_string(), DbValue::Boolean(true));
+    row.insert("total".to_string(), DbValue::Decimal(12.5));
+    writer.insert("flags", row).await.unwrap();
+
+    let rows = reader
+        .read_with_schema("flags", &QueryOptions::default(), &schema)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("is_priority"), Some(&DbValue::Boolean(true)));
+    assert_eq!(rows[0].get("total"), Some(&DbValue::Decimal(12.5)));
 }
