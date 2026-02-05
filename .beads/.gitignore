@@ -4,6 +4,7 @@
 *.db-journal
 *.db-wal
 *.db-shm
+.bv.lock
 
 # Daemon runtime files
 daemon.lock
