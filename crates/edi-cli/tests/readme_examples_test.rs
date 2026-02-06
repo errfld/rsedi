@@ -98,7 +98,7 @@ fn readme_transform_orders_to_json_writes_output() {
     let mapping = testdata_path("testdata/mappings/orders_to_json.yaml");
     let output = unique_temp_path("orders-transform", "json");
 
-    let status = Command::new(binary)
+    let command_output = Command::new(binary)
         .args([
             "transform",
             input.to_string_lossy().as_ref(),
@@ -106,10 +106,15 @@ fn readme_transform_orders_to_json_writes_output() {
             "-m",
             mapping.to_string_lossy().as_ref(),
         ])
-        .status()
+        .output()
         .expect("run edi transform");
 
-    assert!(status.success(), "expected transform to succeed");
+    assert!(
+        command_output.status.success(),
+        "expected transform to succeed; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&command_output.stdout),
+        String::from_utf8_lossy(&command_output.stderr)
+    );
 
     let bytes = fs::read(&output).expect("transform output should be readable");
     assert!(!bytes.is_empty(), "transform output should not be empty");
