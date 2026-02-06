@@ -8,9 +8,9 @@ Summary:
 - ...
 
 Quality gates:
-- cargo test --workspace - PASSED
-- cargo clippy --workspace --all-targets -- -D warnings - PASSED
-- cargo build --workspace - PASSED
+- cargo test --workspace - PASSED (commit <short-sha>)
+- cargo clippy --workspace --all-targets -- -D warnings - PASSED (commit <short-sha>)
+- cargo build --workspace - PASSED (commit <short-sha>)
 
 Notes for next session:
 - ...
