@@ -13,12 +13,12 @@ edi-schema = { workspace = true }
 edi-validation = { workspace = true }
 edi-mapping = { workspace = true }
 edi-adapter-edifact = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 anyhow = { workspace = true }
 tempfile = "3"
 edi-adapter-csv = { workspace = true }
