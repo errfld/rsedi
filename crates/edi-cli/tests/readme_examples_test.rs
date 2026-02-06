@@ -9,7 +9,12 @@ fn cargo_bin() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    let fallback = repo_root().join("target").join("debug").join("edi");
+    let target_dir = env::var("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| repo_root().join("target"));
+    let executable_name = format!("edi{}", std::env::consts::EXE_SUFFIX);
+    let fallback = target_dir.join("debug").join(executable_name);
+
     if fallback.exists() {
         return fallback;
     }

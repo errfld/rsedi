@@ -3,6 +3,7 @@
 Rust workspace for parsing, validating, and transforming UN/EDIFACT EDI (EANCOM-first) into a schema-aware Intermediate Representation (IR). The current MVP focuses on ORDERS (EANCOM D96A) with runtime-loaded schemas and a YAML mapping DSL.
 
 ## Status
+
 - MVP focus: ORDERS (EANCOM D96A) parse, validate, map to IR/JSON.
 - CLI supports `transform` and `validate` subcommands. `generate` and config-file support are placeholders.
 - CSV adapter and pipeline logic exist as building blocks; DB adapter types are present but not wired to a driver.
@@ -10,7 +11,7 @@ Rust workspace for parsing, validating, and transforming UN/EDIFACT EDI (EANCOM-
 
 ## Architecture (Conceptual)
 
-```
+```text
 Schema Registry (EDIFACT -> EANCOM -> Partner)
          |
          v
@@ -27,6 +28,7 @@ Schema Registry (EDIFACT -> EANCOM -> Partner)
 ```
 
 ## Workspace Crates
+
 - `crates/edi-ir`: IR node model, metadata, traversal utilities.
 - `crates/edi-schema`: Schema model, loader, inheritance/merge logic.
 - `crates/edi-validation`: Validation engine and reporter for schema-driven rules.
@@ -93,6 +95,7 @@ edi --config <path> <subcommand>
 ```
 
 ### Exit Codes
+
 - `0`: no warnings or errors
 - `1`: warnings only
 - `2`: validation errors
@@ -124,11 +127,13 @@ cargo test --all-targets --all-features
 ```
 
 ## Known MVP Limitations
+
 - `edi --config` is accepted but ignored.
 - `edi generate` is not implemented yet.
 - `edi transform` ignores the optional schema flag for now.
 - CLI runs on full in-memory files rather than streaming chunks.
 
 ## References
+
 - `product_specification.md`
 - `AGENTS.md`
