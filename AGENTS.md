@@ -451,7 +451,8 @@ Demonstrate end-to-end with ORDERS (EANCOM D96A):
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
+   bd sync --status
+   git push origin beads-sync
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -473,6 +474,18 @@ Demonstrate end-to-end with ORDERS (EANCOM D96A):
 
 This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
 
+### Protected Branch Setup (Current Repo Configuration)
+
+- Metadata sync branch: `beads-sync`
+- Configure once per clone: `bd config set sync.branch beads-sync`
+- Start daemon for automatic metadata sync:
+  - `bd daemon start --auto-commit --auto-push --auto-pull`
+- Keep merge support configured:
+  - `.gitattributes` must include `.beads/issues.jsonl merge=beads`
+  - local git config must include:
+    - `git config merge.beads.driver "bd merge %A %O %A %B"`
+    - `git config merge.beads.name "bd JSONL merge driver"`
+
 ### Essential Commands
 
 ```bash
@@ -487,7 +500,8 @@ bd create --title="..." --type=task --priority=2
 bd update <id> --status=in_progress
 bd close <id> --reason="Completed"
 bd close <id1> <id2>  # Close multiple issues at once
-bd sync               # Commit and push changes
+bd sync --status      # Show diff/status between current branch and beads-sync
+bd sync --flush-only  # Manual metadata commit to beads-sync (if daemon is not running)
 ```
 
 ### Workflow Pattern
@@ -496,7 +510,7 @@ bd sync               # Commit and push changes
 2. **Claim**: Use `bd update <id> --status=in_progress`
 3. **Work**: Implement the task
 4. **Complete**: Use `bd close <id>`
-5. **Sync**: Always run `bd sync` at session end
+5. **Sync**: Ensure daemon is running and verify with `bd sync --status` at session end
 
 ### Key Concepts
 
@@ -512,9 +526,9 @@ bd sync               # Commit and push changes
 ```bash
 git status              # Check what changed
 git add <files>         # Stage code changes
-bd sync                 # Commit beads changes
+bd sync --status        # Verify metadata sync state
 git commit -m "..."     # Commit code
-bd sync                 # Commit any new beads changes
+git push origin beads-sync  # Ensure metadata branch is pushed
 git push                # Push to remote
 ```
 
@@ -524,6 +538,7 @@ git push                # Push to remote
 - Update status as you work (in_progress → closed)
 - Create new issues with `bd create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type
-- Always `bd sync` before ending session
+- Keep `bd daemon` running with auto-commit/push/pull in this repo
+- Periodically merge `beads-sync` -> `main` via PR to publish metadata history
 
 <!-- end-bv-agent-instructions -->
