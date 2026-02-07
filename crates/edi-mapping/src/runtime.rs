@@ -284,9 +284,10 @@ impl MappingRuntime {
             crate::Error::Runtime(format!("Lookup key '{}' is not a string", key_source))
         })?;
 
-        let lookup_table = self.lookup_tables.get(table).ok_or_else(|| {
-            crate::Error::Runtime(format!("Lookup table '{}' not found", table))
-        })?;
+        let lookup_table = self
+            .lookup_tables
+            .get(table)
+            .ok_or_else(|| crate::Error::Runtime(format!("Lookup table '{}' not found", table)))?;
 
         let result_value = if let Some(value) = lookup_table.entries.get(&key_str) {
             Value::String(value.clone())
@@ -605,10 +606,7 @@ rules:
 
         assert_eq!(result.root.name, "OUTPUT");
         assert_eq!(mapped.name, "order_id");
-        assert_eq!(
-            mapped.value,
-            Some(Value::String("ORD12345".to_string()))
-        );
+        assert_eq!(mapped.value, Some(Value::String("ORD12345".to_string())));
         assert_eq!(mapped.children.len(), 1);
         assert_eq!(mapped.children[0].name, "order_date");
         assert_eq!(
@@ -769,9 +767,10 @@ lookups:
         let mut runtime = MappingRuntime::new();
 
         let err = runtime.execute(&mapping, &document).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Lookup key 'ORD12345' not found in table 'countries'"));
+        assert!(
+            err.to_string()
+                .contains("Lookup key 'ORD12345' not found in table 'countries'")
+        );
     }
 
     #[test]
@@ -792,7 +791,10 @@ rules:
         let mut runtime = MappingRuntime::new();
 
         let err = runtime.execute(&mapping, &document).unwrap_err();
-        assert!(err.to_string().contains("Lookup table 'countries' not found"));
+        assert!(
+            err.to_string()
+                .contains("Lookup table 'countries' not found")
+        );
     }
 
     #[test]

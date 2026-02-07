@@ -648,10 +648,12 @@ segments: []
 
         let result = loader.resolve_inheritance_chain(&child);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Parent schema not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Parent schema not found")
+        );
     }
 
     #[test]
@@ -668,10 +670,12 @@ segments: []
 
         let result = loader.resolve_inheritance_chain(&schema_a);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Circular dependency"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Circular dependency")
+        );
     }
 
     #[test]

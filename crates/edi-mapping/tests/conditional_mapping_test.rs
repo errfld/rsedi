@@ -39,7 +39,10 @@ fn test_complex_conditional_logic_from_yaml() {
 
     // Should produce output (structure depends on implementation)
     // The mapping should have executed successfully
-    assert!(first_mapped_node(&result1).is_some(), "Mapping should have produced output");
+    assert!(
+        first_mapped_node(&result1).is_some(),
+        "Mapping should have produced output"
+    );
 
     // Test with blanket order (type 221)
     let mut root2 = Node::new("ROOT", NodeType::Root);
@@ -446,7 +449,10 @@ rules:
     root1.add_child(order1);
     let result1 = runtime.execute(&mapping, &Document::new(root1)).unwrap();
     // Check that the condition matched and produced output
-    assert!(first_mapped_node(&result1).is_some(), "Condition should have matched and produced output");
+    assert!(
+        first_mapped_node(&result1).is_some(),
+        "Condition should have matched and produced output"
+    );
 
     // Does not match pattern
     let mut root2 = Node::new("ROOT", NodeType::Root);

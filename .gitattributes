@@ -1,0 +1,5 @@
+# Beads JSONL merge behavior (team-wide, committed to repo)
+.beads/issues.jsonl merge=beads
+
+# Treat Beads JSONL exports as text for readable diffs
+.beads/*.jsonl text diff

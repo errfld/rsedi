@@ -38,9 +38,9 @@ pub use engine::{
 };
 pub use reporter::{Severity, ValidationIssue, ValidationReport, ValidationReporter};
 pub use rules::{
-    validate_code_list, validate_conditional, validate_data_type, validate_length,
-    validate_pattern, validate_required, validate_segment_order, ConditionalRule, Constraint,
-    DataType, SegmentOrderRule,
+    ConditionalRule, Constraint, DataType, SegmentOrderRule, validate_code_list,
+    validate_conditional, validate_data_type, validate_length, validate_pattern, validate_required,
+    validate_segment_order,
 };
 
 use thiserror::Error;

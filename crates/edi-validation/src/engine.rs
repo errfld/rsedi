@@ -3,7 +3,7 @@
 use crate::codelist::CodeListRegistry;
 use crate::reporter::{Severity, ValidationIssue, ValidationReport};
 use crate::rules::{
-    validate_conditional, validate_segment_order, ConditionalRule, SegmentOrderRule,
+    ConditionalRule, SegmentOrderRule, validate_conditional, validate_segment_order,
 };
 use edi_ir::{Document, Node, NodeType};
 use edi_schema::{ElementDefinition, Schema, SegmentDefinition};
@@ -1042,9 +1042,11 @@ mod tests {
                 ]),
             SegmentDefinition::new("LIN")
                 .mandatory(false)
-                .with_elements(vec![ElementDefinition::new("C212", "Item ID", "an")
-                    .mandatory(true)
-                    .length(1, 35)]),
+                .with_elements(vec![
+                    ElementDefinition::new("C212", "Item ID", "an")
+                        .mandatory(true)
+                        .length(1, 35),
+                ]),
         ])
     }
 
