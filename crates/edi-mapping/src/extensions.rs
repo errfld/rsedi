@@ -341,7 +341,7 @@ pub fn create_math_utils_extension() -> Extension {
             _ => {
                 return Err(crate::Error::Transform(
                     "Invalid first argument type".to_string(),
-                ))
+                ));
             }
         };
         let b = match &args[1] {
@@ -353,7 +353,7 @@ pub fn create_math_utils_extension() -> Extension {
             _ => {
                 return Err(crate::Error::Transform(
                     "Invalid second argument type".to_string(),
-                ))
+                ));
             }
         };
         Ok(Value::Decimal(a + b))
@@ -373,7 +373,7 @@ pub fn create_math_utils_extension() -> Extension {
             _ => {
                 return Err(crate::Error::Transform(
                     "Invalid first argument type".to_string(),
-                ))
+                ));
             }
         };
         let b = match &args[1] {
@@ -385,7 +385,7 @@ pub fn create_math_utils_extension() -> Extension {
             _ => {
                 return Err(crate::Error::Transform(
                     "Invalid second argument type".to_string(),
-                ))
+                ));
             }
         };
         Ok(Value::Decimal(a * b))
@@ -502,10 +502,12 @@ mod tests {
 
         let result = registry.call("nonexistent", "func", &[]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Extension 'nonexistent' not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Extension 'nonexistent' not found")
+        );
     }
 
     #[test]
@@ -516,10 +518,12 @@ mod tests {
 
         let result = registry.call("test_ext", "nonexistent_func", &[]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Function 'nonexistent_func' not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Function 'nonexistent_func' not found")
+        );
     }
 
     // Error handling tests
@@ -536,10 +540,12 @@ mod tests {
 
         let result = registry.call("error_ext", "always_fail", &[]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Intentional failure"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Intentional failure")
+        );
     }
 
     #[test]
@@ -561,10 +567,12 @@ mod tests {
 
         let result = registry.call("strict_ext", "requires_two", &[Value::Integer(1)]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Expected 2 arguments"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Expected 2 arguments")
+        );
     }
 
     #[test]
@@ -864,10 +872,12 @@ mod tests {
             ],
         );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid substring range"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid substring range")
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Traversal and cursor APIs for navigating the IR tree
 
-use crate::node::Node;
 use crate::Error;
 use crate::Result;
+use crate::node::Node;
 
 /// A cursor for navigating the IR tree
 pub struct Cursor<'a> {
