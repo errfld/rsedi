@@ -1,5 +1,7 @@
 //! Database read operations.
 
+use std::fmt;
+
 use edi_ir::{Document, Node, NodeType, Value};
 
 use crate::Result;
@@ -35,6 +37,12 @@ impl QueryOptions {
 #[derive(Clone)]
 pub struct DbReader {
     connection: DbConnection,
+}
+
+impl fmt::Debug for DbReader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DbReader").finish_non_exhaustive()
+    }
 }
 
 impl DbReader {
@@ -115,6 +123,7 @@ impl DbReader {
 fn db_to_ir_value(value: DbValue) -> Value {
     match value {
         DbValue::String(value) => Value::String(value),
+        DbValue::Blob(value) => Value::Binary(value),
         DbValue::Integer(value) => Value::Integer(value),
         DbValue::Decimal(value) => Value::Decimal(value),
         DbValue::Boolean(value) => Value::Boolean(value),

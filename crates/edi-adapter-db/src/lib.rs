@@ -8,6 +8,7 @@
 pub mod connection;
 pub mod reader;
 pub mod schema;
+pub(crate) mod sql;
 pub mod writer;
 
 pub use connection::{ConnectionConfig, DbConnection, DbTransaction};

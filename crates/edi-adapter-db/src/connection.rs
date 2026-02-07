@@ -9,6 +9,7 @@ use libsql::{Builder, Connection as LibsqlConnection, Database, Transaction, par
 use tokio::sync::{RwLock, Semaphore};
 
 use crate::schema::{ColumnType, DbValue, Row, SchemaMapping, TableSchema};
+use crate::sql::quote_identifier;
 use crate::{Error, Result};
 
 /// Connection behavior for adapter tests/runtime.
@@ -80,6 +81,7 @@ struct LibsqlState {
 #[cfg(feature = "memory")]
 struct MemoryState {
     state: RwLock<DatabaseState>,
+    schema: RwLock<Option<SchemaMapping>>,
     connected: RwLock<bool>,
 }
 
@@ -112,6 +114,7 @@ impl DbConnection {
         Self {
             backend: DbBackend::Memory(Arc::new(MemoryState {
                 state: RwLock::new(DatabaseState::default()),
+                schema: RwLock::new(None),
                 connected: RwLock::new(false),
             })),
             config: ConnectionConfig::in_memory(),
@@ -142,7 +145,8 @@ impl DbConnection {
                             if attempt + 1 == attempts {
                                 return Err(err);
                             }
-                            tokio::task::yield_now().await;
+                            let delay_ms = 100 * (1_u64 << attempt.min(6));
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                         }
                     }
                 }
@@ -214,7 +218,7 @@ impl DbConnection {
                 let connection = pool.acquire().await?;
                 let transaction =
                     connection
-                        .connection()
+                        .connection()?
                         .transaction()
                         .await
                         .map_err(|source| Error::Libsql {
@@ -260,7 +264,7 @@ impl DbConnection {
                 for table in mapping.tables() {
                     let sql = table.create_table_sql();
                     connection
-                        .connection()
+                        .connection()?
                         .execute(&sql, ())
                         .await
                         .map_err(|source| Error::Sql {
@@ -271,7 +275,10 @@ impl DbConnection {
                 Ok(())
             }
             #[cfg(feature = "memory")]
-            DbBackend::Memory(_) => Ok(()),
+            DbBackend::Memory(state) => {
+                *state.schema.write().await = Some(mapping.clone());
+                Ok(())
+            }
         }
     }
 
@@ -290,7 +297,7 @@ impl DbConnection {
                     })?;
                 let connection = pool.acquire().await?;
                 connection
-                    .connection()
+                    .connection()?
                     .execute(&sql, params_from_iter(params))
                     .await
                     .map_err(|source| Error::Sql {
@@ -301,6 +308,9 @@ impl DbConnection {
             }
             #[cfg(feature = "memory")]
             DbBackend::Memory(state) => {
+                if let Some(schema) = state.schema.read().await.as_ref() {
+                    schema.validate_row(table, &row)?;
+                }
                 let mut state = state.state.write().await;
                 state.tables.entry(table.to_string()).or_default().push(row);
                 Ok(())
@@ -340,7 +350,7 @@ impl DbConnection {
                         details: "Connection pool is not initialized".to_string(),
                     })?;
                 let connection = pool.acquire().await?;
-                query_rows(connection.connection(), table, &sql, params, schema).await
+                query_rows(connection.connection()?, table, &sql, params, schema).await
             }
             #[cfg(feature = "memory")]
             DbBackend::Memory(state) => {
@@ -379,6 +389,12 @@ impl DbConnection {
         updates: &Row,
     ) -> Result<usize> {
         self.ensure_connected().await?;
+        if filter.is_empty() {
+            return Err(Error::Query {
+                table: table.to_string(),
+                details: "Update filter cannot be empty".to_string(),
+            });
+        }
         match &self.backend {
             DbBackend::Libsql(state) => {
                 let (sql, params) = build_update_sql(table, filter, updates)?;
@@ -392,7 +408,7 @@ impl DbConnection {
                     })?;
                 let connection = pool.acquire().await?;
                 let changed = connection
-                    .connection()
+                    .connection()?
                     .execute(&sql, params_from_iter(params))
                     .await
                     .map_err(|source| Error::Sql {
@@ -403,6 +419,7 @@ impl DbConnection {
             }
             #[cfg(feature = "memory")]
             DbBackend::Memory(state) => {
+                let schema = state.schema.read().await.clone();
                 let mut state = state.state.write().await;
                 let rows = state.tables.get_mut(table).ok_or_else(|| Error::Query {
                     table: table.to_string(),
@@ -414,6 +431,9 @@ impl DbConnection {
                     if row_matches_filter(row, filter) {
                         for (column, value) in updates {
                             row.insert(column.clone(), value.clone());
+                        }
+                        if let Some(schema) = schema.as_ref() {
+                            schema.validate_row(table, row)?;
                         }
                         updated += 1;
                     }
@@ -439,7 +459,7 @@ impl DbConnection {
                     })?;
                 let connection = pool.acquire().await?;
                 connection
-                    .connection()
+                    .connection()?
                     .execute(&sql, params_from_iter(params))
                     .await
                     .map_err(|source| Error::Sql {
@@ -450,6 +470,9 @@ impl DbConnection {
             }
             #[cfg(feature = "memory")]
             DbBackend::Memory(state) => {
+                if let Some(schema) = state.schema.read().await.as_ref() {
+                    schema.validate_row(table, &row)?;
+                }
                 let key_value = row.get(key_column).cloned().ok_or_else(|| Error::Query {
                     table: table.to_string(),
                     details: format!("Upsert key column '{key_column}' is missing"),
@@ -486,14 +509,15 @@ impl DbConnection {
                         details: "Connection pool is not initialized".to_string(),
                     })?;
                 let connection = pool.acquire().await?;
-                let mut rows = connection
-                    .connection()
-                    .query(&sql, ())
-                    .await
-                    .map_err(|source| Error::Sql {
-                        statement: sql.clone(),
-                        source,
-                    })?;
+                let mut rows =
+                    connection
+                        .connection()?
+                        .query(&sql, ())
+                        .await
+                        .map_err(|source| Error::Sql {
+                            statement: sql.clone(),
+                            source,
+                        })?;
                 if let Some(row) = rows.next().await.map_err(|source| Error::Sql {
                     statement: sql.clone(),
                     source,
@@ -634,8 +658,10 @@ struct PooledConnection {
 }
 
 impl PooledConnection {
-    fn connection(&self) -> &LibsqlConnection {
-        self.connection.as_ref().expect("pooled connection missing")
+    fn connection(&self) -> Result<&LibsqlConnection> {
+        self.connection.as_ref().ok_or_else(|| Error::Connection {
+            details: "Pooled connection missing".to_string(),
+        })
     }
 }
 
@@ -993,7 +1019,7 @@ fn libsql_value_to_db(value: libsql::Value) -> DbValue {
         libsql::Value::Integer(value) => DbValue::Integer(value),
         libsql::Value::Real(value) => DbValue::Decimal(value),
         libsql::Value::Text(value) => DbValue::String(value),
-        libsql::Value::Blob(value) => DbValue::String(String::from_utf8_lossy(&value).into()),
+        libsql::Value::Blob(value) => DbValue::Blob(value),
     }
 }
 
@@ -1006,9 +1032,14 @@ fn libsql_value_to_db_typed(
     match (value, column_type) {
         (libsql::Value::Null, _) => Ok(DbValue::Null),
         (libsql::Value::Text(value), ColumnType::String) => Ok(DbValue::String(value)),
-        (libsql::Value::Blob(value), ColumnType::String) => {
-            Ok(DbValue::String(String::from_utf8_lossy(&value).into()))
-        }
+        (libsql::Value::Blob(value), ColumnType::String) => String::from_utf8(value)
+            .map(DbValue::String)
+            .map_err(|_| Error::Schema {
+                details: format!(
+                    "Invalid UTF-8 for string column '{}.{}' while reading blob value",
+                    table, column
+                ),
+            }),
         (libsql::Value::Integer(value), ColumnType::Integer) => Ok(DbValue::Integer(value)),
         (libsql::Value::Real(value), ColumnType::Decimal) => Ok(DbValue::Decimal(value)),
         (libsql::Value::Integer(value), ColumnType::Decimal) => Ok(DbValue::Decimal(value as f64)),
@@ -1035,6 +1066,7 @@ fn libsql_value_to_db_typed(
 fn db_value_to_libsql(value: &DbValue) -> libsql::Value {
     match value {
         DbValue::String(value) => libsql::Value::Text(value.clone()),
+        DbValue::Blob(value) => libsql::Value::Blob(value.clone()),
         DbValue::Integer(value) => libsql::Value::Integer(*value),
         DbValue::Decimal(value) => libsql::Value::Real(*value),
         DbValue::Boolean(value) => libsql::Value::Integer(if *value { 1 } else { 0 }),
@@ -1120,6 +1152,12 @@ fn build_update_sql(
             details: "Update row cannot be empty".to_string(),
         });
     }
+    if filter.is_empty() {
+        return Err(Error::Query {
+            table: table.to_string(),
+            details: "Update filter cannot be empty".to_string(),
+        });
+    }
 
     let mut params = Vec::new();
     let mut assignments = Vec::new();
@@ -1134,19 +1172,17 @@ fn build_update_sql(
         assignments.join(", ")
     );
 
-    if !filter.is_empty() {
-        let mut clauses = Vec::new();
-        for (column, value) in filter {
-            if matches!(value, DbValue::Null) {
-                clauses.push(format!("{} IS NULL", quote_identifier(column)));
-            } else {
-                params.push(db_value_to_libsql(value));
-                clauses.push(format!("{} = ?{}", quote_identifier(column), params.len()));
-            }
+    let mut clauses = Vec::new();
+    for (column, value) in filter {
+        if matches!(value, DbValue::Null) {
+            clauses.push(format!("{} IS NULL", quote_identifier(column)));
+        } else {
+            params.push(db_value_to_libsql(value));
+            clauses.push(format!("{} = ?{}", quote_identifier(column), params.len()));
         }
-        sql.push_str(" WHERE ");
-        sql.push_str(&clauses.join(" AND "));
     }
+    sql.push_str(" WHERE ");
+    sql.push_str(&clauses.join(" AND "));
 
     Ok((sql, params))
 }
@@ -1189,11 +1225,6 @@ fn build_upsert_sql(
     );
 
     Ok((sql, params))
-}
-
-fn quote_identifier(value: &str) -> String {
-    let escaped = value.replace('"', "\"\"");
-    format!("\"{}\"", escaped)
 }
 
 #[cfg(test)]
@@ -1289,5 +1320,66 @@ mod tests {
         conn.connect().await.unwrap();
         conn.insert_row("orders", sample_row(1)).await.unwrap();
         assert_eq!(conn.table_row_count("orders").await.unwrap(), 1);
+    }
+
+    #[cfg(feature = "memory")]
+    #[tokio::test]
+    async fn test_memory_backend_validates_schema() {
+        let conn = DbConnection::memory();
+        conn.connect().await.unwrap();
+        conn.apply_schema(&sample_schema()).await.unwrap();
+
+        let mut invalid_row = Row::new();
+        invalid_row.insert("id".to_string(), DbValue::String("wrong-type".to_string()));
+        invalid_row.insert("order_no".to_string(), DbValue::String("PO-1".to_string()));
+
+        let err = conn.insert_row("orders", invalid_row).await.unwrap_err();
+        assert!(matches!(err, Error::Schema { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_update_rows_requires_filter() {
+        let conn = DbConnection::new();
+        conn.connect().await.unwrap();
+        conn.apply_schema(&sample_schema()).await.unwrap();
+        conn.insert_row("orders", sample_row(1)).await.unwrap();
+
+        let filter = Row::new();
+        let mut updates = Row::new();
+        updates.insert(
+            "order_no".to_string(),
+            DbValue::String("PO-1-UPDATED".to_string()),
+        );
+
+        let err = conn
+            .update_rows("orders", &filter, &updates)
+            .await
+            .unwrap_err();
+        match err {
+            Error::Query { details, .. } => assert!(details.contains("filter cannot be empty")),
+            _ => panic!("expected query error when update filter is empty"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_blob_values_round_trip() {
+        let conn = DbConnection::new();
+        conn.connect().await.unwrap();
+        conn.apply_schema(&sample_schema()).await.unwrap();
+
+        let mut row = Row::new();
+        row.insert("id".to_string(), DbValue::Integer(1));
+        row.insert(
+            "order_no".to_string(),
+            DbValue::Blob(vec![0, 159, 146, 150]),
+        );
+        conn.insert_row("orders", row).await.unwrap();
+
+        let rows = conn.select_rows("orders", None, 0, Some(1)).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("order_no"),
+            Some(&DbValue::Blob(vec![0, 159, 146, 150]))
+        );
     }
 }

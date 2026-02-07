@@ -1,5 +1,7 @@
 //! Database write operations.
 
+use std::fmt;
+
 use edi_ir::{Document, Node, Value};
 
 use crate::Result;
@@ -10,6 +12,12 @@ use crate::schema::{DbValue, Row, SchemaMapping};
 #[derive(Clone)]
 pub struct DbWriter {
     connection: DbConnection,
+}
+
+impl fmt::Debug for DbWriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DbWriter").finish_non_exhaustive()
+    }
 }
 
 impl DbWriter {
@@ -98,7 +106,7 @@ fn ir_value_to_db(value: Value) -> DbValue {
         Value::Integer(value) => DbValue::Integer(value),
         Value::Decimal(value) => DbValue::Decimal(value),
         Value::Boolean(value) => DbValue::Boolean(value),
-        Value::Binary(value) => DbValue::String(String::from_utf8_lossy(&value).into_owned()),
+        Value::Binary(value) => DbValue::Blob(value),
         Value::Null => DbValue::Null,
     }
 }

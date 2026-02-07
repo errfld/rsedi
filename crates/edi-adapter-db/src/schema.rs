@@ -4,12 +4,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use crate::sql::quote_identifier;
 use crate::{Error, Result};
 
 /// Database value used by reader/writer operations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DbValue {
     String(String),
+    Blob(Vec<u8>),
     Integer(i64),
     Decimal(f64),
     Boolean(bool),
@@ -104,11 +106,7 @@ impl TableSchema {
     }
 
     pub fn create_table_sql(&self) -> String {
-        let columns: Vec<String> = self
-            .columns
-            .iter()
-            .map(|column| column_definition_sql(column))
-            .collect();
+        let columns: Vec<String> = self.columns.iter().map(column_definition_sql).collect();
 
         format!(
             "CREATE TABLE IF NOT EXISTS {} ({})",
@@ -224,11 +222,6 @@ fn column_type_sql(column_type: ColumnType) -> &'static str {
         ColumnType::Decimal => "REAL",
         ColumnType::Boolean => "BOOLEAN",
     }
-}
-
-fn quote_identifier(value: &str) -> String {
-    let escaped = value.replace('\"', "\"\"");
-    format!("\"{}\"", escaped)
 }
 
 fn value_matches_type(value: &DbValue, column_type: ColumnType) -> bool {
