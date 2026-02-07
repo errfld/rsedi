@@ -34,3 +34,11 @@ Validation exit codes:
 - `0`: no warnings or errors
 - `1`: warnings only
 - `2`: validation errors
+
+## Issue Tracking Migration
+
+Task tracking has moved from Beads to GitHub Issues. Migration tooling and runbook:
+
+- `scripts/github-migration/migrate-beads-to-github.sh`
+- `scripts/github-migration/validate-beads-github-migration.sh`
+- `docs/operations/github-issues-migration.md`
