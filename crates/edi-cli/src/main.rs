@@ -209,7 +209,7 @@ fn transform(
         .with_context(|| format!("Failed to finalize output file '{}'", output_path))?;
 
     for warning in &parsed.warnings {
-        eprintln!("WARNING: {}", format_parse_warning(warning));
+        eprintln!("WARNING: {}", format_parse_warning(warning, input_path));
     }
 
     println!(
@@ -249,7 +249,11 @@ fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> 
     let validator = ValidationEngine::new();
 
     let mut error_lines: Vec<String> = Vec::new();
-    let mut warning_lines: Vec<String> = parsed.warnings.iter().map(format_parse_warning).collect();
+    let mut warning_lines: Vec<String> = parsed
+        .warnings
+        .iter()
+        .map(|warning| format_parse_warning(warning, input_path))
+        .collect();
     let mut info_lines: Vec<String> = Vec::new();
 
     let mut error_count = 0usize;
@@ -271,14 +275,14 @@ fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> 
             match issue.severity {
                 Severity::Error => {
                     error_count += 1;
-                    error_lines.push(format_validation_issue(message_number, issue));
+                    error_lines.push(format_validation_issue(message_number, input_path, issue));
                 }
                 Severity::Warning => {
                     warning_count += 1;
-                    warning_lines.push(format_validation_issue(message_number, issue));
+                    warning_lines.push(format_validation_issue(message_number, input_path, issue));
                 }
                 Severity::Info => {
-                    let formatted = format_validation_issue(message_number, issue);
+                    let formatted = format_validation_issue(message_number, input_path, issue);
                     tracing::debug!(issue = %formatted, "Validation info issue");
                     info_lines.push(formatted);
                 }
@@ -342,19 +346,23 @@ fn normalize_document_for_validation<'a>(
     }
 }
 
-fn format_parse_warning(warning: &ParseWarning) -> String {
+fn format_parse_warning(warning: &ParseWarning, source_path: &str) -> String {
     let message_ref = warning
         .message_ref
         .as_deref()
         .unwrap_or("unknown_message_ref");
 
     format!(
-        "message_ref={} line={} col={}: {}",
-        message_ref, warning.position.line, warning.position.column, warning.message
+        "file={} message_ref={} line={} col={}: {}",
+        source_path, message_ref, warning.position.line, warning.position.column, warning.message
     )
 }
 
-fn format_validation_issue(message_number: usize, issue: &ValidationIssue) -> String {
+fn format_validation_issue(
+    message_number: usize,
+    source_path: &str,
+    issue: &ValidationIssue,
+) -> String {
     let code = issue.code.as_deref().unwrap_or("UNKNOWN");
     let mut location_parts = Vec::new();
 
@@ -381,7 +389,7 @@ fn format_validation_issue(message_number: usize, issue: &ValidationIssue) -> St
     };
 
     format!(
-        "message #{} [{}] {} ({})",
-        message_number, code, issue.message, location
+        "file={} message #{} [{}] {} ({})",
+        source_path, message_number, code, issue.message, location
     )
 }

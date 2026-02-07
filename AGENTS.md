@@ -299,33 +299,6 @@ Workspace with the following crates:
 5. **Partial Acceptance** - Configurable: accept-all-with-warnings, fail-all, or quarantine damaged messages
 6. **Strictness Levels** - Accept with warnings by default (real-world EDI), configurable per partner
 
-## Open Questions (Need Decisions)
-
-### 1. Schema Format
-- [ ] JSON Schema directly
-- [ ] Custom YAML/TOML DSL (EDI-aware)
-- [ ] How to represent segment groups, conditional rules, partner overrides
-
-### 2. Mapping DSL
-- [ ] YAML-based declarative vs custom text DSL
-- [ ] Required constructs: foreach/repeat, conditions, lookups, error handling
-
-### 3. Query Language for IR
-- [ ] XPath-like subset
-- [ ] jq-like
-- [ ] Custom (must support segment qualifiers, composite elements)
-
-### 4. Extension Mechanism
-- [ ] Rust dynamic plugins (shared libs)
-- [ ] WASM modules (portable + sandboxed)
-- [ ] Embedded scripting (Rhai/Lua)
-
-### 5. Control Number Management
-- [ ] Persisted sequences (DB-backed)
-- [ ] Caller-provided
-- [ ] File-based state
-- [ ] Partner-specific rules
-
 ## Development Commands
 
 ```bash
@@ -463,3 +436,79 @@ Demonstrate end-to-end with ORDERS (EANCOM D96A):
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+<!-- bv-agent-instructions-v1 -->
+
+---
+
+## GitHub Issues Workflow Integration
+
+This project now uses GitHub Issues as the source of truth for task tracking.
+
+### Essential Commands
+
+```bash
+# List open issues
+gh issue list --state open --limit 200
+
+# Show details for one issue
+gh issue view <number>
+
+# Create issue
+gh issue create --title "..." --body-file /tmp/body.md --label "type:task" --label "priority:P2"
+
+# Mark in progress
+gh issue edit <number> --add-label "status:in-progress"
+
+# Close as completed
+gh issue close <number> --comment "Completed"
+```
+
+### Dependencies and Hierarchy
+
+Use GitHub API for graph links:
+
+```bash
+# Mark issue <child> as blocked by <blocker>
+gh api -X POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -f issue_id=<blocker_issue_id>
+
+# Add <child_issue_id> as sub-issue under parent issue number <parent>
+gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<child_issue_id>
+```
+
+### Workflow Pattern
+
+1. **Start**: `gh issue list --state open --limit 200`
+2. **Claim**: add `status:in-progress` label
+3. **Work**: implement task
+4. **Complete**: close issue and reference relevant commit(s)
+5. **Sync**: push branch and keep issue state current
+
+### Key Concepts
+
+- **Dependencies**: use issue dependency links (`blocked_by`) for scheduling order.
+- **Hierarchy**: use sub-issues for parent/child decomposition.
+- **Priority**: labels `priority:P0`..`priority:P4`.
+- **Types**: labels `type:task`, `type:bug`, `type:feature`.
+- **Agent memory**: keep stable context in issue body sections and append run updates as comments.
+
+### Session Protocol
+
+**Before ending any session, run this checklist:**
+
+```bash
+git status
+git add <files>
+git commit -m "..."
+git push
+```
+
+### Migration Tooling
+
+Migration and parity scripts live in:
+
+- `scripts/github-migration/migrate-beads-to-github.sh`
+- `scripts/github-migration/validate-beads-github-migration.sh`
+- `docs/operations/github-issues-migration.md`
+
+<!-- end-bv-agent-instructions -->
