@@ -13,8 +13,10 @@ use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
 use clap::{Parser, Subcommand};
+use edi_adapter_csv::{CsvConfig, CsvWriter};
 use edi_adapter_edifact::EdifactParser;
 use edi_adapter_edifact::parser::ParseWarning;
+use edi_ir::Document;
 use edi_ir::NodeType;
 use edi_mapping::{MappingDsl, MappingRuntime};
 use edi_schema::SchemaLoader;
@@ -30,6 +32,43 @@ enum CliExitCode {
 impl CliExitCode {
     fn as_exit_code(self) -> ExitCode {
         ExitCode::from(self as u8)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransformOutputFormat {
+    Json,
+    Csv,
+    Edi,
+}
+
+impl TransformOutputFormat {
+    fn from_target_type(target_type: &str) -> anyhow::Result<Self> {
+        let normalized = target_type.trim().to_ascii_uppercase();
+
+        if normalized.contains("JSON") {
+            Ok(Self::Json)
+        } else if normalized.contains("CSV") {
+            Ok(Self::Csv)
+        } else if normalized.contains("EDI")
+            || normalized.contains("EDIFACT")
+            || normalized.contains("EANCOM")
+        {
+            Ok(Self::Edi)
+        } else {
+            bail!(
+                "Unsupported mapping target_type '{}'; expected one containing JSON, CSV, or EDI",
+                target_type
+            );
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "JSON",
+            Self::Csv => "CSV",
+            Self::Edi => "EDI",
+        }
     }
 }
 
@@ -54,8 +93,8 @@ enum Commands {
         /// Input file path
         input: String,
 
-        /// Output file path
-        output: String,
+        /// Output file path (writes to stdout when omitted)
+        output: Option<String>,
 
         /// Mapping file path
         #[arg(short, long)]
@@ -120,10 +159,7 @@ fn run() -> anyhow::Result<CliExitCode> {
             output,
             mapping,
             schema,
-        } => {
-            transform(&input, &output, &mapping, schema.as_deref())?;
-            Ok(CliExitCode::Success)
-        }
+        } => transform(&input, output.as_deref(), &mapping, schema.as_deref()),
         Commands::Validate { input, schema } => validate(&input, &schema),
         Commands::Generate {
             output,
@@ -140,11 +176,16 @@ fn run() -> anyhow::Result<CliExitCode> {
 
 fn transform(
     input_path: &str,
-    output_path: &str,
+    output_path: Option<&str>,
     mapping_path: &str,
     schema_path: Option<&str>,
-) -> anyhow::Result<()> {
-    tracing::info!(input = %input_path, output = %output_path, mapping = %mapping_path, "Starting transform command");
+) -> anyhow::Result<CliExitCode> {
+    tracing::info!(
+        input = %input_path,
+        output = output_path.unwrap_or("stdout"),
+        mapping = %mapping_path,
+        "Starting transform command"
+    );
 
     if let Some(schema) = schema_path {
         tracing::warn!(schema = %schema, "Transform schema argument is not implemented in this MVP and will be ignored");
@@ -168,6 +209,8 @@ fn transform(
 
     let mapping = MappingDsl::parse_file(Path::new(mapping_path))
         .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
+    let output_format = TransformOutputFormat::from_target_type(&mapping.target_type)
+        .with_context(|| format!("Mapping '{}' has invalid target_type", mapping_path))?;
 
     let mut runtime = MappingRuntime::new();
     let mut mapped_documents = Vec::with_capacity(parsed.documents.len());
@@ -183,42 +226,108 @@ fn transform(
         mapped_documents.push(mapped);
     }
 
-    let mut output_file = File::create(output_path)
-        .with_context(|| format!("Failed to create output file '{}'", output_path))?;
-
-    match mapped_documents.as_slice() {
-        [single_document] => serde_json::to_writer_pretty(&mut output_file, single_document)
-            .with_context(|| {
-                format!(
-                    "Failed to serialize transformed output to '{}'",
-                    output_path
-                )
-            })?,
-        _ => serde_json::to_writer_pretty(&mut output_file, &mapped_documents).with_context(
-            || {
-                format!(
-                    "Failed to serialize transformed output to '{}'",
-                    output_path
-                )
-            },
-        )?,
-    }
-
-    output_file
-        .write_all(b"\n")
-        .with_context(|| format!("Failed to finalize output file '{}'", output_path))?;
+    write_transformed_output(mapped_documents.as_slice(), output_format, output_path)?;
 
     for warning in &parsed.warnings {
         eprintln!("WARNING: {}", format_parse_warning(warning, input_path));
     }
 
-    println!(
-        "Transform complete: {} message(s) written to {} ({} parse warning(s)).",
+    let destination = output_path.unwrap_or("stdout");
+    eprintln!(
+        "Transform complete: {} message(s) written to {} as {} ({} parse warning(s)).",
         mapped_documents.len(),
-        output_path,
+        destination,
+        output_format.as_str(),
         parsed.warnings.len()
     );
 
+    if parsed.warnings.is_empty() {
+        Ok(CliExitCode::Success)
+    } else {
+        Ok(CliExitCode::Warnings)
+    }
+}
+
+fn write_transformed_output(
+    mapped_documents: &[Document],
+    output_format: TransformOutputFormat,
+    output_path: Option<&str>,
+) -> anyhow::Result<()> {
+    match output_path {
+        Some(path) => {
+            let mut output_file = File::create(path)
+                .with_context(|| format!("Failed to create output file '{}'", path))?;
+            serialize_transformed_documents(mapped_documents, output_format, &mut output_file)
+                .with_context(|| {
+                    format!(
+                        "Failed to serialize transformed {} output to '{}'",
+                        output_format.as_str(),
+                        path
+                    )
+                })?;
+            if output_format != TransformOutputFormat::Csv {
+                output_file
+                    .write_all(b"\n")
+                    .with_context(|| format!("Failed to finalize output file '{}'", path))?;
+            }
+        }
+        None => {
+            let stdout = std::io::stdout();
+            let mut stdout_handle = stdout.lock();
+            serialize_transformed_documents(mapped_documents, output_format, &mut stdout_handle)
+                .with_context(|| {
+                    format!(
+                        "Failed to serialize transformed {} output to stdout",
+                        output_format.as_str()
+                    )
+                })?;
+            if output_format != TransformOutputFormat::Csv {
+                stdout_handle
+                    .write_all(b"\n")
+                    .context("Failed to finalize transformed output on stdout")?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn serialize_transformed_documents<W: Write>(
+    mapped_documents: &[Document],
+    output_format: TransformOutputFormat,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    match output_format {
+        TransformOutputFormat::Json => match mapped_documents {
+            [single_document] => serde_json::to_writer_pretty(writer, single_document)
+                .context("Failed to serialize mapped document as JSON")?,
+            _ => serde_json::to_writer_pretty(writer, mapped_documents)
+                .context("Failed to serialize mapped documents as JSON")?,
+        },
+        TransformOutputFormat::Csv => serialize_documents_as_csv(mapped_documents, writer)?,
+        TransformOutputFormat::Edi => bail!(
+            "EDI transform output is not implemented yet; use a JSON or CSV target_type in the mapping"
+        ),
+    }
+
+    Ok(())
+}
+
+fn serialize_documents_as_csv<W: Write>(
+    mapped_documents: &[Document],
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    for (index, document) in mapped_documents.iter().enumerate() {
+        let csv_writer = CsvWriter::new().with_config(CsvConfig::new().has_header(index == 0));
+        csv_writer
+            .write_from_ir(&mut *writer, document)
+            .map_err(|err| {
+                anyhow!(
+                    "failed to serialize mapped document {} as CSV: {err}",
+                    index + 1
+                )
+            })?;
+    }
     Ok(())
 }
 
