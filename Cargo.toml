@@ -11,7 +11,7 @@ members = [
     "crates/edi-pipeline",
     "crates/edi-cli",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
@@ -46,6 +46,7 @@ csv = "1.4"
 
 # Database (optional, add when implementing)
 # sqlx = { version = "0.7", features = ["runtime-tokio", "postgres"] }
+libsql = { version = "0.9.29", default-features = false, features = ["core", "remote"] }
 
 # Parser combinators (choose one)
 # winnow = "0.5"
