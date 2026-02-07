@@ -247,10 +247,9 @@ impl<T: Send + 'static> StreamProcessor<T> {
         // Extract data before processing (avoid borrow after move)
         let data = message.data;
         let index = message.index;
-        
+
         // Process with timeout
-        let result = tokio::time::timeout(self.config.message_timeout, processor(data))
-            .await;
+        let result = tokio::time::timeout(self.config.message_timeout, processor(data)).await;
 
         let mut stats = self.stats.lock().await;
         stats.in_flight -= 1;
@@ -270,7 +269,7 @@ impl<T: Send + 'static> StreamProcessor<T> {
         // Update checkpoint
         let mut checkpoint = self.checkpoint.lock().await;
         checkpoint.position = index;
-        
+
         // Note: We track processed/failed in stats, not checkpoint
         drop(checkpoint);
 
@@ -408,7 +407,7 @@ mod tests {
         for i in 0..20 {
             let message = StreamMessage::new(i, format!("message-{}", i));
             processor.submit(message).await.unwrap();
-            
+
             // Process immediately to keep buffer from filling
             processor
                 .process_single(|_data| async move {

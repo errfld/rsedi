@@ -574,9 +574,11 @@ mod tests {
             .unwrap();
 
         // Third should fail
-        assert!(store
-            .quarantine("msg-3", 3, QuarantineReason::ProcessingError, "error")
-            .is_err());
+        assert!(
+            store
+                .quarantine("msg-3", 3, QuarantineReason::ProcessingError, "error")
+                .is_err()
+        );
     }
 
     #[test]
@@ -603,10 +605,12 @@ mod tests {
 
         let result = store.retry("msg-1");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Max retries exceeded"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Max retries exceeded")
+        );
     }
 
     #[test]
