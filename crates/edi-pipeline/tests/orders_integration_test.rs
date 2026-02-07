@@ -32,8 +32,7 @@ fn testdata_path() -> PathBuf {
 /// Helper to load and parse an EDI file
 fn load_edi_file(filename: &str) -> edi_ir::Document {
     let path = testdata_path().join("edi").join(filename);
-    let content =
-        fs::read(&path).unwrap_or_else(|_| panic!("Failed to read {}", path.display()));
+    let content = fs::read(&path).unwrap_or_else(|_| panic!("Failed to read {}", path.display()));
 
     let parser = EdifactParser::new();
     let docs = parser

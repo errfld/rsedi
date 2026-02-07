@@ -1,5 +1,5 @@
 //! # edi-ir
-//! 
+//!
 //! Intermediate Representation structures and traversal APIs for EDI documents.
 //!
 //! This crate provides a generic, schema-aware tree structure that can represent
@@ -7,14 +7,14 @@
 //! different formats (EDIFACT, CSV, database, etc.).
 
 pub mod document;
+pub mod metadata;
 pub mod node;
 pub mod traversal;
-pub mod metadata;
 
 pub use document::Document;
+pub use metadata::{Position, SourceInfo, ValidationState};
 pub use node::{Node, NodeType, Value};
 pub use traversal::{Cursor, Traversal};
-pub use metadata::{Position, SourceInfo, ValidationState};
 
 use thiserror::Error;
 
@@ -23,13 +23,13 @@ use thiserror::Error;
 pub enum Error {
     #[error("Node not found at path: {0}")]
     NodeNotFound(String),
-    
+
     #[error("Invalid path: {0}")]
     InvalidPath(String),
-    
+
     #[error("Type mismatch: expected {expected}, found {found}")]
     TypeMismatch { expected: String, found: String },
-    
+
     #[error("Conversion error: {0}")]
     Conversion(String),
 }

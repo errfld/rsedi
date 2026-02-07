@@ -331,9 +331,11 @@ mod tests {
         let segment = SegmentDefinition::new("UNH")
             .mandatory(true)
             .max_repetitions(1)
-            .with_elements(vec![ElementDefinition::new("0062", "Reference", "an")
-                .mandatory(true)
-                .length(1, 14)]);
+            .with_elements(vec![
+                ElementDefinition::new("0062", "Reference", "an")
+                    .mandatory(true)
+                    .length(1, 14),
+            ]);
 
         assert_eq!(segment.tag, "UNH");
         assert!(segment.is_mandatory);
