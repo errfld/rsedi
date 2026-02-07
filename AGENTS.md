@@ -299,33 +299,6 @@ Workspace with the following crates:
 5. **Partial Acceptance** - Configurable: accept-all-with-warnings, fail-all, or quarantine damaged messages
 6. **Strictness Levels** - Accept with warnings by default (real-world EDI), configurable per partner
 
-## Open Questions (Need Decisions)
-
-### 1. Schema Format
-- [ ] JSON Schema directly
-- [ ] Custom YAML/TOML DSL (EDI-aware)
-- [ ] How to represent segment groups, conditional rules, partner overrides
-
-### 2. Mapping DSL
-- [ ] YAML-based declarative vs custom text DSL
-- [ ] Required constructs: foreach/repeat, conditions, lookups, error handling
-
-### 3. Query Language for IR
-- [ ] XPath-like subset
-- [ ] jq-like
-- [ ] Custom (must support segment qualifiers, composite elements)
-
-### 4. Extension Mechanism
-- [ ] Rust dynamic plugins (shared libs)
-- [ ] WASM modules (portable + sandboxed)
-- [ ] Embedded scripting (Rhai/Lua)
-
-### 5. Control Number Management
-- [ ] Persisted sequences (DB-backed)
-- [ ] Caller-provided
-- [ ] File-based state
-- [ ] Partner-specific rules
-
 ## Development Commands
 
 ```bash
@@ -451,8 +424,6 @@ Demonstrate end-to-end with ORDERS (EANCOM D96A):
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync --status
-   git push origin beads-sync
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -470,75 +441,74 @@ Demonstrate end-to-end with ORDERS (EANCOM D96A):
 
 ---
 
-## Beads Workflow Integration
+## GitHub Issues Workflow Integration
 
-This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
-
-### Protected Branch Setup (Current Repo Configuration)
-
-- Metadata sync branch: `beads-sync`
-- Configure once per clone: `bd config set sync.branch beads-sync`
-- Start daemon for automatic metadata sync:
-  - `bd daemon start --auto-commit --auto-push --auto-pull`
-- Keep merge support configured:
-  - `.gitattributes` must include `.beads/issues.jsonl merge=beads`
-  - local git config must include:
-    - `git config merge.beads.driver "bd merge %A %O %A %B"`
-    - `git config merge.beads.name "bd JSONL merge driver"`
+This project now uses GitHub Issues as the source of truth for task tracking.
 
 ### Essential Commands
 
 ```bash
-# View issues (launches TUI - avoid in automated sessions)
-bv
+# List open issues
+gh issue list --state open --limit 200
 
-# CLI commands for agents (use these instead)
-bd ready              # Show issues ready to work (no blockers)
-bd list --status=open # All open issues
-bd show <id>          # Full issue details with dependencies
-bd create --title="..." --type=task --priority=2
-bd update <id> --status=in_progress
-bd close <id> --reason="Completed"
-bd close <id1> <id2>  # Close multiple issues at once
-bd sync --status      # Show diff/status between current branch and beads-sync
-bd sync --flush-only  # Manual metadata commit to beads-sync (if daemon is not running)
+# Show details for one issue
+gh issue view <number>
+
+# Create issue
+gh issue create --title "..." --body-file /tmp/body.md --label "type:task" --label "priority:P2"
+
+# Mark in progress
+gh issue edit <number> --add-label "status:in-progress"
+
+# Close as completed
+gh issue close <number> --comment "Completed"
+```
+
+### Dependencies and Hierarchy
+
+Use GitHub API for graph links:
+
+```bash
+# Mark issue <child> as blocked by <blocker>
+gh api -X POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -f issue_id=<blocker_issue_id>
+
+# Add <child_issue_id> as sub-issue under parent issue number <parent>
+gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<child_issue_id>
 ```
 
 ### Workflow Pattern
 
-1. **Start**: Run `bd ready` to find actionable work
-2. **Claim**: Use `bd update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `bd close <id>`
-5. **Sync**: Ensure daemon is running and verify with `bd sync --status` at session end
+1. **Start**: `gh issue list --state open --limit 200`
+2. **Claim**: add `status:in-progress` label
+3. **Work**: implement task
+4. **Complete**: close issue and reference relevant commit(s)
+5. **Sync**: push branch and keep issue state current
 
 ### Key Concepts
 
-- **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
-- **Types**: task, bug, feature, epic, question, docs
-- **Blocking**: `bd dep add <issue> <depends-on>` to add dependencies
+- **Dependencies**: use issue dependency links (`blocked_by`) for scheduling order.
+- **Hierarchy**: use sub-issues for parent/child decomposition.
+- **Priority**: labels `priority:P0`..`priority:P4`.
+- **Types**: labels `type:task`, `type:bug`, `type:feature`.
+- **Agent memory**: keep stable context in issue body sections and append run updates as comments.
 
 ### Session Protocol
 
 **Before ending any session, run this checklist:**
 
 ```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-bd sync --status        # Verify metadata sync state
-git commit -m "..."     # Commit code
-git push origin beads-sync  # Ensure metadata branch is pushed
-git push                # Push to remote
+git status
+git add <files>
+git commit -m "..."
+git push
 ```
 
-### Best Practices
+### Migration Tooling
 
-- Check `bd ready` at session start to find available work
-- Update status as you work (in_progress → closed)
-- Create new issues with `bd create` when you discover tasks
-- Use descriptive titles and set appropriate priority/type
-- Keep `bd daemon` running with auto-commit/push/pull in this repo
-- Periodically merge `beads-sync` -> `main` via PR to publish metadata history
+Migration and parity scripts live in:
+
+- `scripts/github-migration/migrate-beads-to-github.sh`
+- `scripts/github-migration/validate-beads-github-migration.sh`
+- `docs/operations/github-issues-migration.md`
 
 <!-- end-bv-agent-instructions -->

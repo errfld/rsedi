@@ -21,3 +21,6 @@ Thumbs.db
 # Test artifacts
 *.tmp
 *.log
+
+# Migration run artifacts
+.migration/
