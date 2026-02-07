@@ -1,3 +1,10 @@
+#![deny(warnings)]
+#![deny(rust_2018_idioms)]
+#![deny(unsafe_op_in_unsafe_fn)]
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+#![allow(clippy::pedantic)] // Incrementally adopt pedantic lints without blocking current API.
+
 //! # edi-ir
 //!
 //! Intermediate Representation structures and traversal APIs for EDI documents.

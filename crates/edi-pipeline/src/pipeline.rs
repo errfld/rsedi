@@ -480,7 +480,7 @@ impl Pipeline {
 
         let run = move || async move {
             let processor = StreamProcessor::new(stream_config);
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MessageOutcome>();
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<MessageOutcome>(1);
             let mut outcomes = Vec::with_capacity(work_items.len());
 
             for work in work_items {
@@ -503,7 +503,11 @@ impl Pipeline {
                             None,
                         );
                         let succeeded = outcome.success;
-                        let _ = sender.send(outcome);
+                        sender.send(outcome).await.map_err(|_| {
+                            Error::Streaming(
+                                "Streaming processor failed to publish message result".to_string(),
+                            )
+                        })?;
                         if succeeded {
                             Ok(())
                         } else {
@@ -555,9 +559,14 @@ impl Pipeline {
                     runtime.block_on(run())
                 });
 
-                handle
-                    .join()
-                    .map_err(|_| Error::Streaming("Streaming worker thread panicked".to_string()))?
+                handle.join().map_err(|panic_payload| {
+                    let message = panic_payload
+                        .downcast_ref::<&str>()
+                        .map(|value| (*value).to_string())
+                        .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "non-string panic payload".to_string());
+                    Error::Streaming(format!("Streaming worker thread panicked: {message}"))
+                })?
             }
             Err(_) => {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -596,7 +605,7 @@ impl Pipeline {
             while path_index < paths.len() && !batch.is_full() {
                 let item_path = paths[path_index].as_ref().to_path_buf();
                 let item_id = format!("file-{}", path_index);
-                let _ = batch.add(item_id, item_path)?;
+                batch.add(item_id, item_path)?;
                 path_index += 1;
             }
 

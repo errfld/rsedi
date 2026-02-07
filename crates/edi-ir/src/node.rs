@@ -152,8 +152,7 @@ impl Value {
             Value::Date(d) => Some(d.clone()),
             Value::Time(t) => Some(t.clone()),
             Value::DateTime(dt) => Some(dt.clone()),
-            Value::Binary(_) => None,
-            Value::Null => None,
+            Value::Binary(_) | Value::Null => None,
         }
     }
 
@@ -334,13 +333,13 @@ mod tests {
     #[test]
     fn test_value_is_null() {
         assert!(Value::Null.is_null());
-        assert!(!Value::String("".to_string()).is_null());
+        assert!(!Value::String(String::new()).is_null());
         assert!(!Value::Integer(0).is_null());
         assert!(!Value::Decimal(0.0).is_null());
         assert!(!Value::Boolean(false).is_null());
-        assert!(!Value::Date("".to_string()).is_null());
-        assert!(!Value::Time("".to_string()).is_null());
-        assert!(!Value::DateTime("".to_string()).is_null());
+        assert!(!Value::Date(String::new()).is_null());
+        assert!(!Value::Time(String::new()).is_null());
+        assert!(!Value::DateTime(String::new()).is_null());
         assert!(!Value::Binary(vec![]).is_null());
     }
 
