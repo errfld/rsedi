@@ -44,6 +44,12 @@ fn unique_temp_path(name: &str, extension: &str) -> PathBuf {
     env::temp_dir().join(filename)
 }
 
+fn write_temp_mapping(name: &str, yaml: &str) -> PathBuf {
+    let path = unique_temp_path(name, "yaml");
+    fs::write(&path, yaml).expect("mapping file should be writable");
+    path
+}
+
 fn assert_exit_code(status: std::process::ExitStatus, expected: i32, context: &str) {
     let code = status.code().unwrap_or(-1);
     assert_eq!(code, expected, "{context} (exit code {code})");
@@ -124,4 +130,155 @@ fn readme_transform_orders_to_json_writes_output() {
     assert!(!value.is_null(), "transform output should not be JSON null");
 
     let _ = fs::remove_file(&output);
+}
+
+#[test]
+fn transform_csv_target_writes_csv_output() {
+    let binary = cargo_bin();
+    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
+    let mapping = write_temp_mapping(
+        "orders-to-csv",
+        r#"
+name: orders_to_csv_minimal
+source_type: EANCOM_D96A_ORDERS
+target_type: CSV_ORDERS
+rules:
+  - type: field
+    source: /BGM/e2
+    target: order_number
+"#,
+    );
+    let output = unique_temp_path("orders-transform", "csv");
+
+    let command_output = Command::new(binary)
+        .args([
+            "transform",
+            input.to_string_lossy().as_ref(),
+            output.to_string_lossy().as_ref(),
+            "-m",
+            mapping.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run edi transform");
+
+    assert!(
+        command_output.status.success(),
+        "expected CSV transform to succeed; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&command_output.stdout),
+        String::from_utf8_lossy(&command_output.stderr)
+    );
+
+    let csv_output = fs::read_to_string(&output).expect("CSV output should be readable");
+    assert!(
+        csv_output.starts_with("message_index,name,node_type,value"),
+        "unexpected CSV header: {csv_output}"
+    );
+    assert!(
+        csv_output.contains("order_number"),
+        "expected mapped field in CSV output: {csv_output}"
+    );
+
+    let _ = fs::remove_file(&output);
+    let _ = fs::remove_file(&mapping);
+}
+
+#[test]
+fn transform_eancom_target_writes_edifact_output() {
+    let binary = cargo_bin();
+    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
+    let mapping = write_temp_mapping(
+        "orders-to-edifact",
+        r#"
+name: orders_to_edifact
+source_type: EANCOM_D96A_ORDERS
+target_type: EANCOM_D96A_ORDERS
+rules:
+  - type: field
+    source: /UNH/e1
+    target: UNH.e1
+  - type: field
+    source: /BGM/e1
+    target: BGM.e1
+  - type: field
+    source: /BGM/e2
+    target: BGM.e2
+"#,
+    );
+    let output = unique_temp_path("orders-transform-edifact", "edi");
+
+    let command_output = Command::new(binary)
+        .args([
+            "transform",
+            input.to_string_lossy().as_ref(),
+            output.to_string_lossy().as_ref(),
+            "-m",
+            mapping.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run edi transform");
+
+    assert!(
+        command_output.status.success(),
+        "expected EDI transform to succeed; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&command_output.stdout),
+        String::from_utf8_lossy(&command_output.stderr)
+    );
+
+    let rendered = fs::read_to_string(&output).expect("EDI output should be readable");
+    assert!(
+        rendered.contains("UNH+1'"),
+        "expected serialized UNH segment, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("BGM+220+ORDER123'"),
+        "expected serialized BGM segment, got: {rendered}"
+    );
+
+    let _ = fs::remove_file(&output);
+    let _ = fs::remove_file(&mapping);
+}
+
+#[test]
+fn transform_eancom_target_with_invalid_shape_fails() {
+    let binary = cargo_bin();
+    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
+    let mapping = write_temp_mapping(
+        "orders-to-invalid-edifact-shape",
+        r#"
+name: invalid_edi_shape
+source_type: EANCOM_D96A_ORDERS
+target_type: EANCOM_D96A_ORDERS
+rules:
+  - type: field
+    source: /BGM/e2
+    target: order_number
+"#,
+    );
+    let output = unique_temp_path("orders-transform-invalid-edifact", "edi");
+
+    let command_output = Command::new(binary)
+        .args([
+            "transform",
+            input.to_string_lossy().as_ref(),
+            output.to_string_lossy().as_ref(),
+            "-m",
+            mapping.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run edi transform");
+
+    assert_exit_code(
+        command_output.status,
+        2,
+        "expected EDI transform with invalid shape to fail",
+    );
+
+    let stderr = String::from_utf8_lossy(&command_output.stderr);
+    assert!(
+        stderr.contains("No serializable EDIFACT segments found"),
+        "expected actionable EDIFACT shape error, got stderr: {stderr}"
+    );
+
+    let _ = fs::remove_file(&output);
+    let _ = fs::remove_file(&mapping);
 }
