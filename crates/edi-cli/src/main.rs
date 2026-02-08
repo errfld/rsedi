@@ -242,13 +242,21 @@ fn transform(
 
 fn infer_transform_output_format(target_type: &str) -> anyhow::Result<TransformOutputFormat> {
     let normalized = target_type.to_ascii_uppercase();
-    if normalized.contains("JSON") {
+    let tokens = normalized
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    if tokens.contains(&"JSON") {
         return Ok(TransformOutputFormat::Json);
     }
-    if normalized.contains("CSV") {
+    if tokens.contains(&"CSV") {
         return Ok(TransformOutputFormat::Csv);
     }
-    if normalized.contains("EDIFACT") || normalized.contains("EANCOM") || normalized.contains("EDI")
+    if tokens
+        .iter()
+        .copied()
+        .any(|token| matches!(token, "EDIFACT" | "EANCOM" | "EDI"))
     {
         return Ok(TransformOutputFormat::Edifact);
     }
@@ -501,4 +509,43 @@ fn format_validation_issue(
         "file={} message #{} [{}] {} ({})",
         source_path, message_number, code, issue.message, location
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TransformOutputFormat, infer_transform_output_format};
+
+    #[test]
+    fn infer_transform_output_format_recognizes_edi_family_tokens() {
+        assert_eq!(
+            infer_transform_output_format("EANCOM_D96A_ORDERS").expect("eancom"),
+            TransformOutputFormat::Edifact
+        );
+        assert_eq!(
+            infer_transform_output_format("edifact_orders").expect("edifact"),
+            TransformOutputFormat::Edifact
+        );
+        assert_eq!(
+            infer_transform_output_format("EDI_ORDERS").expect("edi"),
+            TransformOutputFormat::Edifact
+        );
+    }
+
+    #[test]
+    fn infer_transform_output_format_does_not_match_edi_substrings() {
+        assert!(infer_transform_output_format("CREDIT_NOTE").is_err());
+        assert!(infer_transform_output_format("MEDICAL_ORDER").is_err());
+    }
+
+    #[test]
+    fn infer_transform_output_format_handles_json_and_csv() {
+        assert_eq!(
+            infer_transform_output_format("JSON_ORDERS").expect("json"),
+            TransformOutputFormat::Json
+        );
+        assert_eq!(
+            infer_transform_output_format("CSV_ORDERS").expect("csv"),
+            TransformOutputFormat::Csv
+        );
+    }
 }

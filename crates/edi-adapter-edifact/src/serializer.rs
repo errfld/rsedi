@@ -398,11 +398,11 @@ fn build_segments_from_fields(fields: &[MappedField]) -> Result<Vec<SegmentAccum
     let mut segments: Vec<SegmentAccumulator> = Vec::new();
 
     for field in fields {
-        if let Some(last) = segments.last_mut()
-            && last.can_accept(field)
-        {
-            last.insert(field)?;
-            continue;
+        if let Some(last) = segments.last_mut() {
+            if last.can_accept(field) {
+                last.insert(field)?;
+                continue;
+            }
         }
 
         let mut new_segment = SegmentAccumulator::new(field.descriptor.clone());
