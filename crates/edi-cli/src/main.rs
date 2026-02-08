@@ -13,8 +13,8 @@ use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
 use clap::{Parser, Subcommand};
-use edi_adapter_edifact::EdifactParser;
 use edi_adapter_edifact::parser::ParseWarning;
+use edi_adapter_edifact::{EdifactParser, EdifactSerializer};
 use edi_ir::NodeType;
 use edi_mapping::{MappingDsl, MappingRuntime};
 use edi_schema::SchemaLoader;
@@ -30,6 +30,23 @@ enum CliExitCode {
 impl CliExitCode {
     fn as_exit_code(self) -> ExitCode {
         ExitCode::from(self as u8)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransformOutputFormat {
+    Json,
+    Csv,
+    Edifact,
+}
+
+impl TransformOutputFormat {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Csv => "csv",
+            Self::Edifact => "edifact",
+        }
     }
 }
 
@@ -168,6 +185,12 @@ fn transform(
 
     let mapping = MappingDsl::parse_file(Path::new(mapping_path))
         .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
+    let output_format = infer_transform_output_format(&mapping.target_type).with_context(|| {
+        format!(
+            "Unsupported mapping target_type '{}' in '{}'",
+            mapping.target_type, mapping_path
+        )
+    })?;
 
     let mut runtime = MappingRuntime::new();
     let mut mapped_documents = Vec::with_capacity(parsed.documents.len());
@@ -185,24 +208,17 @@ fn transform(
 
     let mut output_file = File::create(output_path)
         .with_context(|| format!("Failed to create output file '{}'", output_path))?;
-
-    match mapped_documents.as_slice() {
-        [single_document] => serde_json::to_writer_pretty(&mut output_file, single_document)
-            .with_context(|| {
-                format!(
-                    "Failed to serialize transformed output to '{}'",
-                    output_path
-                )
-            })?,
-        _ => serde_json::to_writer_pretty(&mut output_file, &mapped_documents).with_context(
-            || {
-                format!(
-                    "Failed to serialize transformed output to '{}'",
-                    output_path
-                )
-            },
-        )?,
-    }
+    let rendered_output =
+        render_transform_output(&mapped_documents, output_format).with_context(|| {
+            format!(
+                "Failed to serialize transformed output as {} to '{}'",
+                output_format.name(),
+                output_path
+            )
+        })?;
+    output_file
+        .write_all(&rendered_output)
+        .with_context(|| format!("Failed to write output file '{}'", output_path))?;
 
     output_file
         .write_all(b"\n")
@@ -213,13 +229,106 @@ fn transform(
     }
 
     println!(
-        "Transform complete: {} message(s) written to {} ({} parse warning(s)).",
+        "Transform complete: {} message(s) written to {} as {} (target_type={}, {} parse warning(s)).",
         mapped_documents.len(),
         output_path,
+        output_format.name(),
+        mapping.target_type,
         parsed.warnings.len()
     );
 
     Ok(())
+}
+
+fn infer_transform_output_format(target_type: &str) -> anyhow::Result<TransformOutputFormat> {
+    let normalized = target_type.to_ascii_uppercase();
+    if normalized.contains("JSON") {
+        return Ok(TransformOutputFormat::Json);
+    }
+    if normalized.contains("CSV") {
+        return Ok(TransformOutputFormat::Csv);
+    }
+    if normalized.contains("EDIFACT") || normalized.contains("EANCOM") || normalized.contains("EDI")
+    {
+        return Ok(TransformOutputFormat::Edifact);
+    }
+
+    bail!(
+        "Unsupported target_type '{}'. Supported output families: JSON, CSV, EDI/EANCOM/EDIFACT",
+        target_type
+    );
+}
+
+fn render_transform_output(
+    documents: &[edi_ir::Document],
+    output_format: TransformOutputFormat,
+) -> anyhow::Result<Vec<u8>> {
+    match output_format {
+        TransformOutputFormat::Json => match documents {
+            [single_document] => serde_json::to_vec_pretty(single_document)
+                .context("Failed to serialize transformed document to JSON"),
+            _ => serde_json::to_vec_pretty(documents)
+                .context("Failed to serialize transformed documents to JSON"),
+        },
+        TransformOutputFormat::Csv => Ok(serialize_documents_as_csv(documents).into_bytes()),
+        TransformOutputFormat::Edifact => {
+            let serializer = EdifactSerializer::new();
+            let mut payloads = Vec::with_capacity(documents.len());
+
+            for (index, document) in documents.iter().enumerate() {
+                let serialized = serializer.serialize_document(document).map_err(|error| {
+                    anyhow!(
+                        "Message {} does not match EDIFACT output shape requirements: {}",
+                        index + 1,
+                        error
+                    )
+                })?;
+                payloads.push(serialized);
+            }
+
+            Ok(payloads.join("\n").into_bytes())
+        }
+    }
+}
+
+fn serialize_documents_as_csv(documents: &[edi_ir::Document]) -> String {
+    let mut output = String::from("message_index,name,node_type,value\n");
+
+    for (index, document) in documents.iter().enumerate() {
+        append_csv_rows(&document.root, index + 1, &mut output);
+    }
+
+    output
+}
+
+fn append_csv_rows(node: &edi_ir::Node, message_index: usize, output: &mut String) {
+    let value = node
+        .value
+        .as_ref()
+        .and_then(edi_ir::Value::as_string)
+        .unwrap_or_default();
+
+    output.push_str(&message_index.to_string());
+    output.push(',');
+    output.push_str(&escape_csv_field(&node.name));
+    output.push(',');
+    output.push_str(&escape_csv_field(&format!("{:?}", node.node_type)));
+    output.push(',');
+    output.push_str(&escape_csv_field(&value));
+    output.push('\n');
+
+    for child in &node.children {
+        append_csv_rows(child, message_index, output);
+    }
+}
+
+fn escape_csv_field(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') {
+        let escaped = value.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        value.to_string()
+    }
 }
 
 fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> {
