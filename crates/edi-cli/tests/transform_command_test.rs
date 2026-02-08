@@ -145,83 +145,50 @@ fn transform_requires_mapping_flag() {
 }
 
 #[test]
-fn transform_fails_for_unsupported_target_type() {
+fn transform_fails_for_unsupported_target_types() {
+    let cases = [("xml-orders", "XML_ORDERS"), ("credit-note", "CREDIT_NOTE")];
     let binary = cargo_bin();
     let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
-    let mapping_path = unique_temp_path("unsupported-target", "yaml");
-    let output_path = unique_temp_path("unsupported-target", "txt");
 
-    let mapping = r#"
-name: unsupported_target
+    for (label, target_type) in cases {
+        let mapping_path = unique_temp_path(&format!("{label}-target"), "yaml");
+        let output_path = unique_temp_path(&format!("{label}-target"), "txt");
+        let mapping = format!(
+            r#"
+name: {label}_target
 source_type: EANCOM_ORDERS
-target_type: XML_ORDERS
+target_type: {target_type}
 rules:
   - type: field
     source: /BGM/e2
     target: order_number
-"#;
-    fs::write(&mapping_path, mapping).expect("write temp mapping");
+"#
+        );
+        fs::write(&mapping_path, mapping).expect("write temp mapping");
 
-    let output = Command::new(binary)
-        .args([
-            "transform",
-            input.to_string_lossy().as_ref(),
-            output_path.to_string_lossy().as_ref(),
-            "-m",
-            mapping_path.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .expect("run edi transform");
+        let output = Command::new(binary.clone())
+            .args([
+                "transform",
+                input.to_string_lossy().as_ref(),
+                output_path.to_string_lossy().as_ref(),
+                "-m",
+                mapping_path.to_string_lossy().as_ref(),
+            ])
+            .output()
+            .expect("run edi transform");
 
-    let code = output.status.code().unwrap_or(-1);
-    assert_eq!(code, 2, "expected transform failure exit code, got {code}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Unsupported mapping target_type"),
-        "expected unsupported target type error; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+        let code = output.status.code().unwrap_or(-1);
+        assert_eq!(
+            code, 2,
+            "[{target_type}] expected transform failure exit code, got {code}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Unsupported mapping target_type"),
+            "[{target_type}] expected unsupported target type error; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-    let _ = fs::remove_file(&mapping_path);
-    let _ = fs::remove_file(&output_path);
-}
-
-#[test]
-fn transform_does_not_misclassify_credit_note_as_edi() {
-    let binary = cargo_bin();
-    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
-    let mapping_path = unique_temp_path("credit-note-target", "yaml");
-    let output_path = unique_temp_path("credit-note-target", "txt");
-
-    let mapping = r#"
-name: credit_note_target
-source_type: EANCOM_ORDERS
-target_type: CREDIT_NOTE
-rules:
-  - type: field
-    source: /BGM/e2
-    target: order_number
-"#;
-    fs::write(&mapping_path, mapping).expect("write temp mapping");
-
-    let output = Command::new(binary)
-        .args([
-            "transform",
-            input.to_string_lossy().as_ref(),
-            output_path.to_string_lossy().as_ref(),
-            "-m",
-            mapping_path.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .expect("run edi transform");
-
-    let code = output.status.code().unwrap_or(-1);
-    assert_eq!(code, 2, "expected transform failure exit code, got {code}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Unsupported mapping target_type"),
-        "expected unsupported target type error; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let _ = fs::remove_file(&mapping_path);
-    let _ = fs::remove_file(&output_path);
+        let _ = fs::remove_file(&mapping_path);
+        let _ = fs::remove_file(&output_path);
+    }
 }
