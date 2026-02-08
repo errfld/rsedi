@@ -133,50 +133,48 @@ fn readme_transform_orders_to_json_writes_output() {
 }
 
 #[test]
-fn transform_csv_target_writes_csv_output() {
-    let binary = cargo_bin();
-    let input = testdata_path("testdata/edi/valid_orders_d96a_full.edi");
-    let mapping = testdata_path("testdata/mappings/orders_to_csv.yaml");
-    let output = unique_temp_path("orders-transform", "csv");
+fn transform_target_outputs_table_driven() {
+    enum MappingSource {
+        Fixture(&'static str),
+        Inline(&'static str),
+    }
 
-    let command_output = Command::new(binary)
-        .args([
-            "transform",
-            input.to_string_lossy().as_ref(),
-            output.to_string_lossy().as_ref(),
-            "-m",
-            mapping.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .expect("run edi transform");
+    enum Expectation {
+        Success {
+            output_substrings: Vec<&'static str>,
+        },
+        Failure {
+            exit_code: i32,
+            stderr_substrings: Vec<&'static str>,
+        },
+    }
 
-    assert!(
-        command_output.status.success(),
-        "expected CSV transform to succeed; stdout: {}; stderr: {}",
-        String::from_utf8_lossy(&command_output.stdout),
-        String::from_utf8_lossy(&command_output.stderr)
-    );
+    struct Case {
+        name: &'static str,
+        input_path: &'static str,
+        mapping_source: MappingSource,
+        output_extension: &'static str,
+        expectation: Expectation,
+    }
 
-    let csv_output = fs::read_to_string(&output).expect("CSV output should be readable");
-    assert!(
-        csv_output.starts_with("document_type,line_number,product_code"),
-        "unexpected CSV header: {csv_output}"
-    );
-    assert!(
-        csv_output.contains("No description supplied"),
-        "expected mapped field in CSV output: {csv_output}"
-    );
-
-    let _ = fs::remove_file(&output);
-}
-
-#[test]
-fn transform_eancom_target_writes_edifact_output() {
-    let binary = cargo_bin();
-    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
-    let mapping = write_temp_mapping(
-        "orders-to-edifact",
-        r#"
+    let cases = vec![
+        Case {
+            name: "csv_output",
+            input_path: "testdata/edi/valid_orders_d96a_full.edi",
+            mapping_source: MappingSource::Fixture("testdata/mappings/orders_to_csv.yaml"),
+            output_extension: "csv",
+            expectation: Expectation::Success {
+                output_substrings: vec![
+                    "document_type,line_number,product_code",
+                    "No description supplied",
+                ],
+            },
+        },
+        Case {
+            name: "edi_output",
+            input_path: "testdata/edi/valid_orders_d96a_minimal.edi",
+            mapping_source: MappingSource::Inline(
+                r#"
 name: orders_to_edifact
 source_type: EANCOM_D96A_ORDERS
 target_type: EANCOM_D96A_ORDERS
@@ -191,48 +189,17 @@ rules:
     source: /BGM/e2
     target: BGM.e2
 "#,
-    );
-    let output = unique_temp_path("orders-transform-edifact", "edi");
-
-    let command_output = Command::new(binary)
-        .args([
-            "transform",
-            input.to_string_lossy().as_ref(),
-            output.to_string_lossy().as_ref(),
-            "-m",
-            mapping.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .expect("run edi transform");
-
-    assert!(
-        command_output.status.success(),
-        "expected EDI transform to succeed; stdout: {}; stderr: {}",
-        String::from_utf8_lossy(&command_output.stdout),
-        String::from_utf8_lossy(&command_output.stderr)
-    );
-
-    let rendered = fs::read_to_string(&output).expect("EDI output should be readable");
-    assert!(
-        rendered.contains("UNH+1'"),
-        "expected serialized UNH segment, got: {rendered}"
-    );
-    assert!(
-        rendered.contains("BGM+220+ORDER123'"),
-        "expected serialized BGM segment, got: {rendered}"
-    );
-
-    let _ = fs::remove_file(&output);
-    let _ = fs::remove_file(&mapping);
-}
-
-#[test]
-fn transform_eancom_target_with_invalid_shape_fails() {
-    let binary = cargo_bin();
-    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
-    let mapping = write_temp_mapping(
-        "orders-to-invalid-edifact-shape",
-        r#"
+            ),
+            output_extension: "edi",
+            expectation: Expectation::Success {
+                output_substrings: vec!["UNH+1'", "BGM+220+ORDER123'"],
+            },
+        },
+        Case {
+            name: "edi_invalid_shape",
+            input_path: "testdata/edi/valid_orders_d96a_minimal.edi",
+            mapping_source: MappingSource::Inline(
+                r#"
 name: invalid_edi_shape
 source_type: EANCOM_D96A_ORDERS
 target_type: EANCOM_D96A_ORDERS
@@ -241,32 +208,84 @@ rules:
     source: /BGM/e2
     target: order_number
 "#,
-    );
-    let output = unique_temp_path("orders-transform-invalid-edifact", "edi");
+            ),
+            output_extension: "edi",
+            expectation: Expectation::Failure {
+                exit_code: 2,
+                stderr_substrings: vec!["No serializable EDIFACT segments found"],
+            },
+        },
+    ];
 
-    let command_output = Command::new(binary)
-        .args([
-            "transform",
-            input.to_string_lossy().as_ref(),
-            output.to_string_lossy().as_ref(),
-            "-m",
-            mapping.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .expect("run edi transform");
+    let binary = cargo_bin();
 
-    assert_exit_code(
-        command_output.status,
-        2,
-        "expected EDI transform with invalid shape to fail",
-    );
+    for case in cases {
+        let input = testdata_path(case.input_path);
+        let (mapping_path, remove_mapping_file) = match &case.mapping_source {
+            MappingSource::Fixture(path) => (testdata_path(path), false),
+            MappingSource::Inline(yaml) => (write_temp_mapping(case.name, yaml), true),
+        };
+        let output = unique_temp_path(case.name, case.output_extension);
 
-    let stderr = String::from_utf8_lossy(&command_output.stderr);
-    assert!(
-        stderr.contains("No serializable EDIFACT segments found"),
-        "expected actionable EDIFACT shape error, got stderr: {stderr}"
-    );
+        let command_output = Command::new(&binary)
+            .args([
+                "transform",
+                input.to_string_lossy().as_ref(),
+                output.to_string_lossy().as_ref(),
+                "-m",
+                mapping_path.to_string_lossy().as_ref(),
+            ])
+            .output()
+            .expect("run edi transform");
 
-    let _ = fs::remove_file(&output);
-    let _ = fs::remove_file(&mapping);
+        match &case.expectation {
+            Expectation::Success { output_substrings } => {
+                assert!(
+                    command_output.status.success(),
+                    "expected transform case '{}' to succeed; stdout: {}; stderr: {}",
+                    case.name,
+                    String::from_utf8_lossy(&command_output.stdout),
+                    String::from_utf8_lossy(&command_output.stderr)
+                );
+
+                let rendered = fs::read_to_string(&output)
+                    .expect("transform output should be readable for success case");
+                for substring in output_substrings {
+                    assert!(
+                        rendered.contains(substring),
+                        "expected output for case '{}' to contain '{}', got: {}",
+                        case.name,
+                        substring,
+                        rendered
+                    );
+                }
+            }
+            Expectation::Failure {
+                exit_code,
+                stderr_substrings,
+            } => {
+                assert_exit_code(
+                    command_output.status,
+                    *exit_code,
+                    &format!("expected transform case '{}' to fail", case.name),
+                );
+
+                let stderr = String::from_utf8_lossy(&command_output.stderr);
+                for substring in stderr_substrings {
+                    assert!(
+                        stderr.contains(substring),
+                        "expected stderr for case '{}' to contain '{}', got: {}",
+                        case.name,
+                        substring,
+                        stderr
+                    );
+                }
+            }
+        }
+
+        let _ = fs::remove_file(&output);
+        if remove_mapping_file {
+            let _ = fs::remove_file(&mapping_path);
+        }
+    }
 }

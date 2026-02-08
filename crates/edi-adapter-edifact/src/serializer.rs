@@ -27,10 +27,10 @@ impl EdifactSerializer {
     ///
     /// Returns an error if the document does not contain any serializable EDIFACT segments.
     pub fn serialize_document(&self, document: &Document) -> Result<String> {
-        let mut native_segments = Vec::new();
-        collect_native_segment_strings(&document.root, &mut native_segments);
-        if !native_segments.is_empty() {
-            return Ok(native_segments.join("\n"));
+        let mut output = String::new();
+        let native_segment_count = collect_native_segments_into_output(&document.root, &mut output);
+        if native_segment_count > 0 {
+            return Ok(output);
         }
 
         let mut mapped_fields = Vec::new();
@@ -50,11 +50,15 @@ impl EdifactSerializer {
             ));
         }
 
-        Ok(segments
-            .iter()
-            .map(SegmentAccumulator::render)
-            .collect::<Vec<_>>()
-            .join("\n"))
+        output.clear();
+        for (index, segment) in segments.iter().enumerate() {
+            if index > 0 {
+                output.push('\n');
+            }
+            output.push_str(&segment.render());
+        }
+
+        Ok(output)
     }
 }
 
@@ -270,14 +274,22 @@ impl SegmentAccumulator {
     }
 }
 
-fn collect_native_segment_strings(node: &Node, segments: &mut Vec<String>) {
+fn collect_native_segments_into_output(node: &Node, output: &mut String) -> usize {
+    let mut segment_count = 0usize;
+
     if matches!(node.node_type, NodeType::Segment) {
-        segments.push(serialize_native_segment(node));
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&serialize_native_segment(node));
+        segment_count += 1;
     }
 
     for child in &node.children {
-        collect_native_segment_strings(child, segments);
+        segment_count += collect_native_segments_into_output(child, output);
     }
+
+    segment_count
 }
 
 fn serialize_native_segment(segment: &Node) -> String {
