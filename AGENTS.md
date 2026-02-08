@@ -460,7 +460,7 @@ gh issue create --title "..." --body-file /tmp/body.md --label "type:task" --lab
 # Mark in progress
 gh issue edit <number> --add-label "status:in-progress"
 
-# Close as completed
+# Close as completed (only after PR merge)
 gh issue close <number> --comment "Completed"
 ```
 
@@ -476,13 +476,19 @@ gh api -X POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -f is
 gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<child_issue_id>
 ```
 
-### Workflow Pattern
+### Workflow Pattern (GitHub-Issues-First)
 
-1. **Start**: `gh issue list --state open --limit 200`
-2. **Claim**: add `status:in-progress` label
-3. **Work**: implement task
-4. **Complete**: close issue and reference relevant commit(s)
-5. **Sync**: push branch and keep issue state current
+1. **Pick issue**: determine the best open issue to start based on priority, dependencies, and unblocking impact.
+2. **Mark in progress**: add `status:in-progress` on the selected issue.
+3. **Create worktree and branch**: create a dedicated branch named `gh-<issue-number>/<short-description>` and a matching worktree directory name that mirrors it (replace `/` with `-`), e.g. branch `gh-123/fix-parser` with worktree folder `gh-123-fix-parser`.
+4. **Implement**:
+   - Record notable operational/implementation improvements in `AGENTS.md`.
+   - If you identify follow-up improvements/reworks, create GitHub issues with full context for someone with no prior project knowledge.
+   - Verify behavior with appropriate tests and quality checks (`cargo fmt`, `cargo clippy`, `cargo test`), and ensure production-ready quality.
+   - Review your own changes before opening a PR.
+5. **Push and open PR**: push branch to remote and create a pull request linked to the issue.
+6. **Review cycle**: wait for review, then address/resolve all PR comments.
+7. **Merge and close**: after PR merge (performed by the user/maintainer), the agent may close the related issue automatically only if the merge fully resolves the issue scope.
 
 ### Key Concepts
 
