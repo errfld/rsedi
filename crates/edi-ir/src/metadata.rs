@@ -1,4 +1,6 @@
 //! Metadata for tracking source positions and validation state
+#![allow(clippy::must_use_candidate)] // Constructor helpers are clear at call sites without #[must_use].
+#![allow(clippy::return_self_not_must_use)] // Fluent setters are designed for chaining.
 
 use serde::{Deserialize, Serialize};
 

@@ -913,7 +913,7 @@ fn process_single_message(
     let mapped_payload = if config.enable_mapping {
         if let Some(mapper) = mapper {
             match mapper.map(&canonical_json) {
-                Ok(mapped) => mapped,
+                Ok(mapped) => Some(mapped),
                 Err(error) => {
                     return MessageOutcome {
                         message_id,
@@ -926,25 +926,26 @@ fn process_single_message(
                 }
             }
         } else {
-            canonical_json.clone()
+            None
         }
     } else {
-        canonical_json.clone()
+        None
     };
 
-    let final_payload = match render_output(config.output_format, document, &mapped_payload) {
-        Ok(payload) => payload,
-        Err(error) => {
-            return MessageOutcome {
-                message_id,
-                success: false,
-                error: Some(error),
-                validation_failures: 0,
-                quarantine_reason: QuarantineReason::ProcessingError,
-                quarantine_payload: mapped_payload.into_bytes(),
-            };
-        }
-    };
+    let final_payload =
+        match render_output(config.output_format, document, mapped_payload.as_deref()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return MessageOutcome {
+                    message_id,
+                    success: false,
+                    error: Some(error),
+                    validation_failures: 0,
+                    quarantine_reason: QuarantineReason::ProcessingError,
+                    quarantine_payload: mapped_payload.unwrap_or(canonical_json).into_bytes(),
+                };
+            }
+        };
 
     debug!(
         message_id = %message_id,
@@ -1045,31 +1046,23 @@ fn message_id(document: &Document, index: usize) -> String {
 fn render_output(
     format: OutputFormat,
     document: &Document,
-    mapped_payload: &str,
+    mapped_payload: Option<&str>,
 ) -> std::result::Result<String, String> {
     match format {
-        OutputFormat::Json => Ok(mapped_payload.to_string()),
+        OutputFormat::Json => mapped_payload.map_or_else(
+            || serde_json::to_string_pretty(document).map_err(|error| error.to_string()),
+            |mapped| Ok(mapped.to_string()),
+        ),
         OutputFormat::Csv => {
-            if !mapped_payload.is_empty() {
-                Ok(mapped_payload.to_string())
-            } else {
-                Ok(serialize_csv(document))
-            }
+            Ok(mapped_payload.map_or_else(|| serialize_csv(document), str::to_string))
         }
         OutputFormat::Xml => {
-            if !mapped_payload.is_empty() {
-                Ok(mapped_payload.to_string())
-            } else {
-                Ok(serialize_xml(document))
-            }
+            Ok(mapped_payload.map_or_else(|| serialize_xml(document), str::to_string))
         }
-        OutputFormat::Edifact => {
-            if !mapped_payload.is_empty() {
-                Ok(mapped_payload.to_string())
-            } else {
-                serialize_edifact(document)
-            }
-        }
+        OutputFormat::Edifact => mapped_payload.map_or_else(
+            || serialize_edifact(document),
+            |mapped| Ok(mapped.to_string()),
+        ),
     }
 }
 
@@ -1299,6 +1292,51 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(content.to_string())
         }
+    }
+
+    fn sample_document() -> Document {
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut segment = Node::new("BGM", NodeType::Segment);
+        segment.add_child(Node::with_value(
+            "1004",
+            NodeType::Element,
+            Value::String("PO1".to_string()),
+        ));
+        root.add_child(segment);
+        Document::new(root)
+    }
+
+    #[test]
+    fn test_render_output_without_mapper_uses_selected_format() {
+        let document = sample_document();
+
+        let json = render_output(OutputFormat::Json, &document, None).expect("json");
+        assert!(json.contains("\"name\": \"ROOT\""));
+
+        let csv = render_output(OutputFormat::Csv, &document, None).expect("csv");
+        assert!(csv.starts_with("name,node_type,value\n"));
+
+        let xml = render_output(OutputFormat::Xml, &document, None).expect("xml");
+        assert!(xml.starts_with("<document>"));
+
+        let edi = render_output(OutputFormat::Edifact, &document, None).expect("edi");
+        assert_eq!(edi, "BGM+PO1'");
+    }
+
+    #[test]
+    fn test_render_output_prefers_mapper_payload_when_present() {
+        let document = sample_document();
+        let mapped = "mapped-payload";
+
+        let json = render_output(OutputFormat::Json, &document, Some(mapped)).expect("json");
+        let csv = render_output(OutputFormat::Csv, &document, Some(mapped)).expect("csv");
+        let xml = render_output(OutputFormat::Xml, &document, Some(mapped)).expect("xml");
+        let edi = render_output(OutputFormat::Edifact, &document, Some(mapped)).expect("edi");
+
+        assert_eq!(json, mapped);
+        assert_eq!(csv, mapped);
+        assert_eq!(xml, mapped);
+        assert_eq!(edi, mapped);
     }
 
     #[test]

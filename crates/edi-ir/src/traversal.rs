@@ -1,4 +1,7 @@
 //! Traversal and cursor APIs for navigating the IR tree
+#![allow(clippy::must_use_candidate)] // Cursor getter methods are side-effect free and widely used.
+#![allow(clippy::missing_errors_doc)] // Error behavior is encoded in cursor method names and tests.
+#![allow(clippy::uninlined_format_args)] // Keep formatting style consistent with neighboring modules.
 
 use crate::Error;
 use crate::Result;

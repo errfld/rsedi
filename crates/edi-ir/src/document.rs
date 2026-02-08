@@ -1,4 +1,6 @@
 //! Document representation for the Intermediate Representation
+#![allow(clippy::must_use_candidate)] // Builder/constructor API intentionally omits pervasive #[must_use].
+#![allow(clippy::return_self_not_must_use)] // Fluent builder methods return Self for ergonomics.
 
 use crate::metadata::SourceInfo;
 use crate::node::Node;

@@ -1,4 +1,6 @@
 //! Node types for the Intermediate Representation
+#![allow(clippy::must_use_candidate)] // Accessors and search helpers follow existing API style.
+#![allow(clippy::doc_markdown)] // `DateTime`/ISO token style appears throughout existing docs.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
