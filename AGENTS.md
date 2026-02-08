@@ -460,8 +460,11 @@ gh issue create --title "..." --body-file /tmp/body.md --label "type:task" --lab
 # Mark in progress
 gh issue edit <number> --add-label "status:in-progress"
 
-# Close as completed (only after PR merge)
+# Close as completed (only after PR merge and full scope resolution)
 gh issue close <number> --comment "Completed"
+
+# Optional: mark partially resolved work that needs follow-up
+gh issue edit <number> --add-label "needs-follow-up"
 ```
 
 ### Dependencies and Hierarchy
@@ -480,7 +483,7 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
 
 1. **Pick issue**: determine the best open issue to start based on priority, dependencies, and unblocking impact.
 2. **Mark in progress**: add `status:in-progress` on the selected issue.
-3. **Create worktree and branch**: create a dedicated branch named `gh-<issue-number>/<short-description>` and a matching worktree directory name that mirrors it (replace `/` with `-`), e.g. branch `gh-123/fix-parser` with worktree folder `gh-123-fix-parser`.
+3. **Create worktree and branch**: create a dedicated branch named `gh-<issue-number>/<short-description>` and a matching worktree directory name that mirrors it (replace `/` with `-`). Sanitize `<short-description>` as follows: lowercase; convert spaces/consecutive whitespace to a single `-`; replace `/` and `\` with `-`; remove invalid Git ref characters (such as `:`, `?`, `*`, `[`, `]`, `~`, `^`, `@{`); collapse repeated `-`; trim leading/trailing `.`, `/`, and `-`; and cap length to 50 characters. Example: branch `gh-123/fix-parser` with worktree folder `gh-123-fix-parser`.
 4. **Implement**:
    - Record notable operational/implementation improvements in `AGENTS.md`.
    - If you identify follow-up improvements/reworks, create GitHub issues with full context for someone with no prior project knowledge.
@@ -489,6 +492,13 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
 5. **Push and open PR**: push branch to remote and create a pull request linked to the issue.
 6. **Review cycle**: wait for review, then address/resolve all PR comments.
 7. **Merge and close**: after PR merge (performed by the user/maintainer), the agent may close the related issue automatically only if the merge fully resolves the issue scope.
+   - Supported merge-detection methods:
+     - periodic polling of PR status via API/CLI (e.g. `gh pr view <number> --json state,mergedAt`)
+     - repository webhook events for merged PRs
+     - explicit maintainer trigger (comment, label, or command)
+   - Default behavior: wait for confirmed merged state before closing the issue.
+   - Optional stricter behavior: require a maintainer confirmation signal in addition to merged state before closing.
+   - Partial resolution: leave the issue open, add a detailed comment describing remaining tasks, and optionally add a `needs-follow-up` label.
 
 ### Key Concepts
 
@@ -500,14 +510,7 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
 
 ### Session Protocol
 
-**Before ending any session, run this checklist:**
-
-```bash
-git status
-git add <files>
-git commit -m "..."
-git push
-```
+Before ending any session, follow the comprehensive `Landing the Plane (Session Completion)` workflow above.
 
 ### Migration Tooling
 
