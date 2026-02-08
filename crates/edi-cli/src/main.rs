@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
 use clap::{Parser, Subcommand};
-use edi_adapter_csv::{CsvConfig, CsvWriter};
+use edi_adapter_csv::{ColumnDef, CsvConfig, CsvSchema, CsvWriter};
 use edi_adapter_edifact::EdifactParser;
 use edi_adapter_edifact::parser::ParseWarning;
 use edi_ir::Document;
@@ -321,8 +321,17 @@ fn serialize_documents_as_csv<W: Write>(
     mapped_documents: &[Document],
     writer: &mut W,
 ) -> anyhow::Result<()> {
+    let csv_schema = mapped_documents
+        .first()
+        .and_then(infer_csv_schema_from_document);
+
     for (index, document) in mapped_documents.iter().enumerate() {
-        let csv_writer = CsvWriter::new().with_config(CsvConfig::new().has_header(index == 0));
+        let mut csv_writer = CsvWriter::new();
+        if let Some(schema) = &csv_schema {
+            csv_writer = csv_writer.with_schema(schema.clone());
+        }
+        csv_writer = csv_writer.with_config(CsvConfig::new().has_header(index == 0));
+
         csv_writer
             .write_from_ir(&mut *writer, document)
             .map_err(|err| {
@@ -333,6 +342,29 @@ fn serialize_documents_as_csv<W: Write>(
             })?;
     }
     Ok(())
+}
+
+fn infer_csv_schema_from_document(document: &Document) -> Option<CsvSchema> {
+    let first_record = csv_records_from_document(document).first()?;
+
+    let schema = first_record.children.iter().fold(
+        CsvSchema::with_name("transform_output").with_header(),
+        |schema, child| schema.add_column(ColumnDef::new(child.name.clone())),
+    );
+
+    Some(schema)
+}
+
+fn csv_records_from_document(document: &Document) -> &[edi_ir::Node] {
+    let root = &document.root;
+    if root.children.len() == 1
+        && root.children[0].node_type == NodeType::SegmentGroup
+        && !root.children[0].children.is_empty()
+    {
+        &root.children[0].children
+    } else {
+        &root.children
+    }
 }
 
 fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> {
@@ -505,4 +537,48 @@ fn format_validation_issue(
         "file={} message #{} [{}] {} ({})",
         source_path, message_number, code, issue.message, location
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use edi_ir::{Node, Value};
+
+    #[test]
+    fn serialize_documents_as_csv_reuses_first_document_schema() {
+        let first_document = csv_document(&[("order_number", "A100"), ("line_number", "1")]);
+        let second_document = csv_document(&[
+            ("line_number", "2"),
+            ("order_number", "A100"),
+            ("unexpected_extra_field", "ignored"),
+        ]);
+
+        let mut output = Vec::new();
+        serialize_documents_as_csv(&[first_document, second_document], &mut output)
+            .expect("serialize documents as CSV");
+
+        let csv = String::from_utf8(output).expect("CSV output should be valid UTF-8");
+        let mut lines = csv.lines();
+
+        assert_eq!(lines.next(), Some("order_number,line_number"));
+        assert_eq!(lines.next(), Some("A100,1"));
+        assert_eq!(lines.next(), Some("A100,2"));
+        assert_eq!(lines.next(), None);
+    }
+
+    fn csv_document(fields: &[(&str, &str)]) -> Document {
+        let mut record = Node::new("record", NodeType::Record);
+        for (name, value) in fields {
+            record.add_child(Node::with_value(
+                *name,
+                NodeType::Field,
+                Value::String((*value).to_string()),
+            ));
+        }
+
+        let mut root = Node::new("ROOT", NodeType::Root);
+        root.add_child(record);
+
+        Document::new(root)
+    }
 }
