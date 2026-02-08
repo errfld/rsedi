@@ -14,8 +14,8 @@ use std::process::ExitCode;
 use anyhow::{Context, anyhow, bail};
 use clap::{Parser, Subcommand};
 use edi_adapter_csv::{ColumnDef, CsvConfig, CsvSchema, CsvWriter};
-use edi_adapter_edifact::EdifactParser;
 use edi_adapter_edifact::parser::ParseWarning;
+use edi_adapter_edifact::{EdifactParser, EdifactSerializer};
 use edi_ir::Document;
 use edi_ir::NodeType;
 use edi_mapping::{MappingDsl, MappingRuntime};
@@ -309,9 +309,40 @@ fn serialize_transformed_documents<W: Write>(
                 .context("Failed to serialize mapped documents as JSON")?,
         },
         TransformOutputFormat::Csv => serialize_documents_as_csv(mapped_documents, writer)?,
-        TransformOutputFormat::Edi => bail!(
-            "EDI transform output is not implemented yet; use a JSON or CSV target_type in the mapping"
-        ),
+        TransformOutputFormat::Edi => serialize_documents_as_edi(mapped_documents, writer)?,
+    }
+
+    Ok(())
+}
+
+fn serialize_documents_as_edi<W: Write>(
+    mapped_documents: &[Document],
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let serializer = EdifactSerializer::new();
+
+    for (index, document) in mapped_documents.iter().enumerate() {
+        let payload = serializer.serialize_document(document).map_err(|error| {
+            anyhow!(
+                "message {} does not match EDIFACT output shape requirements: {}",
+                index + 1,
+                error
+            )
+        })?;
+
+        writer
+            .write_all(payload.as_bytes())
+            .with_context(|| format!("failed to write EDI payload for message {}", index + 1))?;
+
+        if index + 1 < mapped_documents.len() {
+            writer.write_all(b"\n").with_context(|| {
+                format!(
+                    "failed to separate EDI payloads between messages {} and {}",
+                    index + 1,
+                    index + 2
+                )
+            })?;
+        }
     }
 
     Ok(())
@@ -543,6 +574,40 @@ fn format_validation_issue(
 mod tests {
     use super::*;
     use edi_ir::{Node, Value};
+
+    #[test]
+    fn infer_transform_output_format_recognizes_edi_family_tokens() {
+        assert_eq!(
+            TransformOutputFormat::from_target_type("EANCOM_D96A_ORDERS").expect("eancom"),
+            TransformOutputFormat::Edi
+        );
+        assert_eq!(
+            TransformOutputFormat::from_target_type("EDIFACT_ORDERS").expect("edifact"),
+            TransformOutputFormat::Edi
+        );
+        assert_eq!(
+            TransformOutputFormat::from_target_type("EDI_ORDERS").expect("edi"),
+            TransformOutputFormat::Edi
+        );
+    }
+
+    #[test]
+    fn infer_transform_output_format_does_not_match_edi_substrings() {
+        assert!(TransformOutputFormat::from_target_type("CREDIT_NOTE").is_err());
+        assert!(TransformOutputFormat::from_target_type("MEDICAL_ORDER").is_err());
+    }
+
+    #[test]
+    fn infer_transform_output_format_handles_json_and_csv() {
+        assert_eq!(
+            TransformOutputFormat::from_target_type("JSON_ORDERS").expect("json"),
+            TransformOutputFormat::Json
+        );
+        assert_eq!(
+            TransformOutputFormat::from_target_type("CSV_ORDERS").expect("csv"),
+            TransformOutputFormat::Csv
+        );
+    }
 
     #[test]
     fn serialize_documents_as_csv_reuses_first_document_schema() {
