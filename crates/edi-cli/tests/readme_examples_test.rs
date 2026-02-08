@@ -135,19 +135,8 @@ fn readme_transform_orders_to_json_writes_output() {
 #[test]
 fn transform_csv_target_writes_csv_output() {
     let binary = cargo_bin();
-    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
-    let mapping = write_temp_mapping(
-        "orders-to-csv",
-        r#"
-name: orders_to_csv_minimal
-source_type: EANCOM_D96A_ORDERS
-target_type: CSV_ORDERS
-rules:
-  - type: field
-    source: /BGM/e2
-    target: order_number
-"#,
-    );
+    let input = testdata_path("testdata/edi/valid_orders_d96a_full.edi");
+    let mapping = testdata_path("testdata/mappings/orders_to_csv.yaml");
     let output = unique_temp_path("orders-transform", "csv");
 
     let command_output = Command::new(binary)
@@ -170,16 +159,15 @@ rules:
 
     let csv_output = fs::read_to_string(&output).expect("CSV output should be readable");
     assert!(
-        csv_output.starts_with("message_index,name,node_type,value"),
+        csv_output.starts_with("document_type,line_number,product_code"),
         "unexpected CSV header: {csv_output}"
     );
     assert!(
-        csv_output.contains("order_number"),
+        csv_output.contains("No description supplied"),
         "expected mapped field in CSV output: {csv_output}"
     );
 
     let _ = fs::remove_file(&output);
-    let _ = fs::remove_file(&mapping);
 }
 
 #[test]
