@@ -1,5 +1,7 @@
 //! Database read operations.
 
+use std::fmt;
+
 use edi_ir::{Document, Node, NodeType, Value};
 
 use crate::Result;
@@ -32,9 +34,15 @@ impl QueryOptions {
 }
 
 /// Reader facade.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DbReader {
     connection: DbConnection,
+}
+
+impl fmt::Debug for DbReader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DbReader").finish_non_exhaustive()
+    }
 }
 
 impl DbReader {
@@ -71,7 +79,21 @@ impl DbReader {
         options: &QueryOptions,
         schema_mapping: &SchemaMapping,
     ) -> Result<Vec<Row>> {
-        let rows = self.read_with_options(table, options).await?;
+        let schema = schema_mapping
+            .table(table)
+            .ok_or_else(|| crate::Error::Schema {
+                details: format!("Unknown table '{table}'"),
+            })?;
+        let rows = self
+            .connection
+            .select_rows_with_schema(
+                table,
+                options.filter.as_ref(),
+                options.offset,
+                options.limit,
+                Some(schema),
+            )
+            .await?;
         for row in &rows {
             schema_mapping.validate_row(table, row)?;
         }
@@ -101,6 +123,7 @@ impl DbReader {
 fn db_to_ir_value(value: DbValue) -> Value {
     match value {
         DbValue::String(value) => Value::String(value),
+        DbValue::Blob(value) => Value::Binary(value),
         DbValue::Integer(value) => Value::Integer(value),
         DbValue::Decimal(value) => Value::Decimal(value),
         DbValue::Boolean(value) => Value::Boolean(value),
@@ -124,9 +147,19 @@ mod tests {
         row
     }
 
+    fn sample_schema() -> SchemaMapping {
+        let table = TableSchema::new("orders")
+            .with_column(ColumnDef::new("id", ColumnType::Integer).primary_key())
+            .with_column(ColumnDef::new("order_no", ColumnType::String));
+        let mut schema = SchemaMapping::new();
+        schema.add_table(table);
+        schema
+    }
+
     async fn setup_reader() -> (DbConnection, DbReader) {
         let connection = DbConnection::new();
         connection.connect().await.unwrap();
+        connection.apply_schema(&sample_schema()).await.unwrap();
         connection
             .insert_row("orders", order_row(1, "PO-1"))
             .await

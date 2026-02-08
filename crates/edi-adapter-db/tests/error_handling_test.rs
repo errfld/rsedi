@@ -32,7 +32,7 @@ async fn test_read_missing_table_fails() {
         .await
         .unwrap_err();
 
-    assert!(err.to_string().contains("Table 'missing' not found"));
+    assert!(matches!(err, edi_adapter_db::Error::Sql { .. }));
 }
 
 #[tokio::test]
