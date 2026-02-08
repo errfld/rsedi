@@ -45,14 +45,18 @@ enum TransformOutputFormat {
 impl TransformOutputFormat {
     fn from_target_type(target_type: &str) -> anyhow::Result<Self> {
         let normalized = target_type.trim().to_ascii_uppercase();
+        let tokens: Vec<&str> = normalized
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .collect();
 
-        if normalized.contains("JSON") {
+        if tokens.contains(&"JSON") {
             Ok(Self::Json)
-        } else if normalized.contains("CSV") {
+        } else if tokens.contains(&"CSV") {
             Ok(Self::Csv)
-        } else if normalized.contains("EDI")
-            || normalized.contains("EDIFACT")
-            || normalized.contains("EANCOM")
+        } else if tokens
+            .iter()
+            .any(|token| matches!(*token, "EDI" | "EDIFACT" | "EANCOM"))
         {
             Ok(Self::Edi)
         } else {
@@ -233,12 +237,12 @@ fn transform(
     }
 
     let destination = output_path.unwrap_or("stdout");
-    eprintln!(
-        "Transform complete: {} message(s) written to {} as {} ({} parse warning(s)).",
-        mapped_documents.len(),
-        destination,
-        output_format.as_str(),
-        parsed.warnings.len()
+    tracing::info!(
+        message_count = mapped_documents.len(),
+        destination = destination,
+        format = output_format.as_str(),
+        warning_count = parsed.warnings.len(),
+        "Transform complete"
     );
 
     if parsed.warnings.is_empty() {

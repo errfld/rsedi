@@ -2,7 +2,10 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn cargo_bin() -> PathBuf {
     if let Ok(path) = env::var("CARGO_BIN_EXE_edi") {
@@ -40,7 +43,11 @@ fn unique_temp_path(name: &str, extension: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system time after epoch")
         .as_nanos();
-    let filename = format!("edi-cli-{name}-{}-{nanos}.{extension}", std::process::id());
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let filename = format!(
+        "edi-cli-{name}-{}-{nanos}-{counter}.{extension}",
+        std::process::id()
+    );
     env::temp_dir().join(filename)
 }
 
@@ -148,6 +155,47 @@ fn transform_fails_for_unsupported_target_type() {
 name: unsupported_target
 source_type: EANCOM_ORDERS
 target_type: XML_ORDERS
+rules:
+  - type: field
+    source: /BGM/e2
+    target: order_number
+"#;
+    fs::write(&mapping_path, mapping).expect("write temp mapping");
+
+    let output = Command::new(binary)
+        .args([
+            "transform",
+            input.to_string_lossy().as_ref(),
+            output_path.to_string_lossy().as_ref(),
+            "-m",
+            mapping_path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run edi transform");
+
+    let code = output.status.code().unwrap_or(-1);
+    assert_eq!(code, 2, "expected transform failure exit code, got {code}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Unsupported mapping target_type"),
+        "expected unsupported target type error; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = fs::remove_file(&mapping_path);
+    let _ = fs::remove_file(&output_path);
+}
+
+#[test]
+fn transform_does_not_misclassify_credit_note_as_edi() {
+    let binary = cargo_bin();
+    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
+    let mapping_path = unique_temp_path("credit-note-target", "yaml");
+    let output_path = unique_temp_path("credit-note-target", "txt");
+
+    let mapping = r#"
+name: credit_note_target
+source_type: EANCOM_ORDERS
+target_type: CREDIT_NOTE
 rules:
   - type: field
     source: /BGM/e2
