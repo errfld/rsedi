@@ -45,6 +45,7 @@ pub struct MappingContext {
 
 impl MappingContext {
     /// Create a new mapping context
+    #[must_use]
     pub fn new(source_node: Node) -> Self {
         Self {
             source_node,
@@ -56,6 +57,7 @@ impl MappingContext {
     }
 
     /// Create a child context for nested execution
+    #[must_use]
     pub fn child_context(&self, source_node: Node, path: impl Into<String>) -> Self {
         Self {
             source_node,
@@ -72,6 +74,7 @@ impl MappingContext {
     }
 
     /// Get a variable
+    #[must_use]
     pub fn get_variable(&self, name: &str) -> Option<&Value> {
         self.variables.get(name)
     }
@@ -82,15 +85,14 @@ impl MappingContext {
         name: impl Into<String>,
         node_type: NodeType,
     ) -> &mut Node {
-        if self.target_node.is_none() {
-            self.target_node = Some(Node::new(name, node_type));
-        }
-        self.target_node.as_mut().unwrap()
+        self.target_node
+            .get_or_insert_with(|| Node::new(name.into(), node_type))
     }
 }
 
 impl MappingRuntime {
     /// Create a new mapping runtime
+    #[must_use]
     pub fn new() -> Self {
         Self {
             extensions: ExtensionRegistry::new(),
@@ -101,6 +103,7 @@ impl MappingRuntime {
     }
 
     /// Create a runtime with an extension registry
+    #[must_use]
     pub fn with_extensions(extensions: ExtensionRegistry) -> Self {
         Self {
             extensions,
@@ -111,9 +114,13 @@ impl MappingRuntime {
     }
 
     /// Execute a mapping on a document
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any mapping rule fails during execution.
     pub fn execute(&mut self, mapping: &Mapping, document: &Document) -> crate::Result<Document> {
         let root_node = document.root.clone();
-        self.lookup_tables = mapping.lookups.clone();
+        self.lookup_tables.clone_from(&mapping.lookups);
         self.root_node = Some(root_node.clone());
         let mut context = MappingContext::new(root_node);
 
@@ -222,7 +229,7 @@ impl MappingRuntime {
         // Process each item
         for (index, item) in collection.iter().enumerate() {
             let mut child_context =
-                context.child_context(item.clone(), format!("{}[{}]", source_path, index));
+                context.child_context(item.clone(), format!("{source_path}[{index}]"));
             child_context.loop_index = Some(index);
 
             // Execute rules for this item
@@ -281,12 +288,13 @@ impl MappingRuntime {
         // Get key from source
         let key = self.resolve_path(&context.source_node, key_source)?;
         let key_str = key.as_string().ok_or_else(|| {
-            crate::Error::Runtime(format!("Lookup key '{}' is not a string", key_source))
+            crate::Error::Runtime(format!("Lookup key '{key_source}' is not a string"))
         })?;
 
-        let lookup_table = self.lookup_tables.get(table).ok_or_else(|| {
-            crate::Error::Runtime(format!("Lookup table '{}' not found", table))
-        })?;
+        let lookup_table = self
+            .lookup_tables
+            .get(table)
+            .ok_or_else(|| crate::Error::Runtime(format!("Lookup table '{table}' not found")))?;
 
         let result_value = if let Some(value) = lookup_table.entries.get(&key_str) {
             Value::String(value.clone())
@@ -294,8 +302,7 @@ impl MappingRuntime {
             Value::String(default.clone())
         } else {
             return Err(crate::Error::Runtime(format!(
-                "Lookup key '{}' not found in table '{}'",
-                key_str, table
+                "Lookup key '{key_str}' not found in table '{table}'"
             )));
         };
 
@@ -337,16 +344,14 @@ impl MappingRuntime {
                 // Last component - return value
                 if let Some(child) = current.find_child(component) {
                     return Ok(child.value.clone().unwrap_or(Value::Null));
-                } else {
-                    return Ok(Value::Null);
                 }
+                return Ok(Value::Null);
+            }
+            // Intermediate component - traverse deeper
+            if let Some(child) = current.find_child(component) {
+                current = child;
             } else {
-                // Intermediate component - traverse deeper
-                if let Some(child) = current.find_child(component) {
-                    current = child;
-                } else {
-                    return Ok(Value::Null);
-                }
+                return Ok(Value::Null);
             }
         }
 
@@ -390,8 +395,10 @@ impl MappingRuntime {
         match condition {
             Condition::Exists { field } => {
                 let value = self.resolve_path(&context.source_node, field)?;
-                Ok(!matches!(value, Value::Null)
-                    && !value.as_string().map(|s| s.is_empty()).unwrap_or(true))
+                Ok(
+                    !matches!(value, Value::Null)
+                        && !value.as_string().is_none_or(|s| s.is_empty()),
+                )
             }
             Condition::Equals {
                 field,
@@ -434,7 +441,7 @@ impl MappingRuntime {
                                     if after_ord.starts_with("[0-9]+") {
                                         Ok(num_part.chars().all(|c| c.is_ascii_digit()))
                                     } else if after_ord.starts_with("[0-9]{")
-                                        && after_ord.contains("}")
+                                        && after_ord.contains('}')
                                     {
                                         // Handle exact digit count like [0-9]{6}
                                         let count_str = after_ord
@@ -495,11 +502,13 @@ impl MappingRuntime {
     }
 
     /// Get current context
+    #[must_use]
     pub fn current_context(&self) -> Option<&MappingContext> {
         self.context_stack.last()
     }
 
     /// Get extension registry
+    #[must_use]
     pub fn extensions(&self) -> &ExtensionRegistry {
         &self.extensions
     }
@@ -583,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_execute_simple_mapping() {
-        let dsl = r#"
+        let dsl = r"
 name: simple_test
 source_type: TEST
 target_type: OUTPUT
@@ -594,7 +603,7 @@ rules:
   - type: field
     source: /HEADER/ORDER_DATE
     target: order_date
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();
@@ -605,10 +614,7 @@ rules:
 
         assert_eq!(result.root.name, "OUTPUT");
         assert_eq!(mapped.name, "order_id");
-        assert_eq!(
-            mapped.value,
-            Some(Value::String("ORD12345".to_string()))
-        );
+        assert_eq!(mapped.value, Some(Value::String("ORD12345".to_string())));
         assert_eq!(mapped.children.len(), 1);
         assert_eq!(mapped.children[0].name, "order_date");
         assert_eq!(
@@ -619,7 +625,7 @@ rules:
 
     #[test]
     fn test_execute_foreach() {
-        let dsl = r#"
+        let dsl = r"
 name: foreach_test
 source_type: TEST
 target_type: OUTPUT
@@ -634,7 +640,7 @@ rules:
       - type: field
         source: SKU
         target: product_code
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();
@@ -769,14 +775,15 @@ lookups:
         let mut runtime = MappingRuntime::new();
 
         let err = runtime.execute(&mapping, &document).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Lookup key 'ORD12345' not found in table 'countries'"));
+        assert!(
+            err.to_string()
+                .contains("Lookup key 'ORD12345' not found in table 'countries'")
+        );
     }
 
     #[test]
     fn test_execute_lookup_missing_table() {
-        let dsl = r#"
+        let dsl = r"
 name: lookup_missing_table_test
 source_type: TEST
 target_type: OUTPUT
@@ -785,19 +792,22 @@ rules:
     table: countries
     key_source: /HEADER/ORDER_NUMBER
     target: lookup_result
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();
         let mut runtime = MappingRuntime::new();
 
         let err = runtime.execute(&mapping, &document).unwrap_err();
-        assert!(err.to_string().contains("Lookup table 'countries' not found"));
+        assert!(
+            err.to_string()
+                .contains("Lookup table 'countries' not found")
+        );
     }
 
     #[test]
     fn test_runtime_error_handling() {
-        let dsl = r#"
+        let dsl = r"
 name: error_test
 source_type: TEST
 target_type: OUTPUT
@@ -805,7 +815,7 @@ rules:
   - type: field
     source: /NONEXISTENT/PATH
     target: output
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();
@@ -844,7 +854,7 @@ rules:
 
     #[test]
     fn test_nested_execution() {
-        let dsl = r#"
+        let dsl = r"
 name: nested_test
 source_type: TEST
 target_type: OUTPUT
@@ -859,7 +869,7 @@ rules:
           - type: field
             source: /HEADER/ORDER_DATE
             target: level2
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();
@@ -874,7 +884,7 @@ rules:
 
     #[test]
     fn test_condition_exists() {
-        let dsl = r#"
+        let dsl = r"
 name: exists_test
 source_type: TEST
 target_type: OUTPUT
@@ -887,7 +897,7 @@ rules:
       - type: field
         source: /HEADER/ORDER_NUMBER
         target: exists_result
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();
@@ -955,7 +965,7 @@ rules:
 
     #[test]
     fn test_condition_and() {
-        let dsl = r#"
+        let dsl = r"
 name: and_test
 source_type: TEST
 target_type: OUTPUT
@@ -972,7 +982,7 @@ rules:
       - type: field
         source: /HEADER/ORDER_NUMBER
         target: and_result
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();
@@ -1043,7 +1053,7 @@ rules:
 
     #[test]
     fn test_foreach_with_transform() {
-        let dsl = r#"
+        let dsl = r"
 name: foreach_transform_test
 source_type: TEST
 target_type: OUTPUT
@@ -1057,7 +1067,7 @@ rules:
         target: product_code
         transform:
           op: uppercase
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();
@@ -1105,7 +1115,7 @@ rules:
 
     #[test]
     fn test_empty_foreach() {
-        let dsl = r#"
+        let dsl = r"
 name: empty_foreach_test
 source_type: TEST
 target_type: OUTPUT
@@ -1117,7 +1127,7 @@ rules:
       - type: field
         source: VALUE
         target: output
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         let document = create_test_document();

@@ -35,35 +35,41 @@ pub struct Constraint {
 
 impl Constraint {
     /// Create a new constraint
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set required
+    #[must_use]
     pub fn required(mut self) -> Self {
         self.required = true;
         self
     }
 
     /// Set min length
+    #[must_use]
     pub fn min_length(mut self, len: usize) -> Self {
         self.min_length = Some(len);
         self
     }
 
     /// Set max length
+    #[must_use]
     pub fn max_length(mut self, len: usize) -> Self {
         self.max_length = Some(len);
         self
     }
 
     /// Set pattern
+    #[must_use]
     pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
         self.pattern = Some(pattern.into());
         self
     }
 
     /// Set data type
+    #[must_use]
     pub fn data_type(mut self, data_type: DataType) -> Self {
         self.data_type = Some(data_type);
         self
@@ -78,6 +84,7 @@ pub struct RuleResult {
 }
 
 impl RuleResult {
+    #[must_use]
     pub fn valid() -> Self {
         Self {
             is_valid: true,
@@ -94,29 +101,28 @@ impl RuleResult {
 }
 
 /// Validate required field
+#[must_use]
 pub fn validate_required(node: &Node) -> RuleResult {
-    if node.value.is_none() || node.value.as_ref().unwrap().is_null() {
+    if node.value.as_ref().is_none_or(edi_ir::Value::is_null) {
         return RuleResult::invalid(format!("Field '{}' is required", node.name));
     }
     RuleResult::valid()
 }
 
 /// Validate length constraints
+#[must_use]
 pub fn validate_length(value: &str, constraint: &Constraint) -> RuleResult {
     let len = value.len();
 
     if let Some(min) = constraint.min_length {
         if len < min {
-            return RuleResult::invalid(format!(
-                "Value length {} is less than minimum {}",
-                len, min
-            ));
+            return RuleResult::invalid(format!("Value length {len} is less than minimum {min}"));
         }
     }
 
     if let Some(max) = constraint.max_length {
         if len > max {
-            return RuleResult::invalid(format!("Value length {} exceeds maximum {}", len, max));
+            return RuleResult::invalid(format!("Value length {len} exceeds maximum {max}"));
         }
     }
 
@@ -124,12 +130,13 @@ pub fn validate_length(value: &str, constraint: &Constraint) -> RuleResult {
 }
 
 /// Validate pattern matching using regex
+#[must_use]
 pub fn validate_pattern(value: &str, pattern: &str) -> RuleResult {
     use regex::Regex;
 
     // Empty strings should not match patterns that require at least one character
     if value.is_empty() {
-        return RuleResult::invalid(format!("Empty value does not match pattern '{}'", pattern));
+        return RuleResult::invalid(format!("Empty value does not match pattern '{pattern}'"));
     }
 
     // Try to compile the regex pattern
@@ -139,30 +146,30 @@ pub fn validate_pattern(value: &str, pattern: &str) -> RuleResult {
                 RuleResult::valid()
             } else {
                 RuleResult::invalid(format!(
-                    "Value '{}' does not match pattern '{}'",
-                    value, pattern
+                    "Value '{value}' does not match pattern '{pattern}'"
                 ))
             }
         }
-        Err(e) => RuleResult::invalid(format!("Invalid regex pattern '{}': {}", pattern, e)),
+        Err(e) => RuleResult::invalid(format!("Invalid regex pattern '{pattern}': {e}")),
     }
 }
 
 /// Validate data type
+#[must_use]
 pub fn validate_data_type(value: &str, data_type: DataType) -> RuleResult {
     match data_type {
         DataType::Integer => {
             if value.parse::<i64>().is_ok() {
                 RuleResult::valid()
             } else {
-                RuleResult::invalid(format!("Value '{}' is not a valid integer", value))
+                RuleResult::invalid(format!("Value '{value}' is not a valid integer"))
             }
         }
         DataType::Decimal => {
             if value.parse::<f64>().is_ok() {
                 RuleResult::valid()
             } else {
-                RuleResult::invalid(format!("Value '{}' is not a valid decimal", value))
+                RuleResult::invalid(format!("Value '{value}' is not a valid decimal"))
             }
         }
         DataType::Boolean => {
@@ -176,7 +183,7 @@ pub fn validate_data_type(value: &str, data_type: DataType) -> RuleResult {
             {
                 RuleResult::valid()
             } else {
-                RuleResult::invalid(format!("Value '{}' is not a valid boolean", value))
+                RuleResult::invalid(format!("Value '{value}' is not a valid boolean"))
             }
         }
         DataType::Date => {
@@ -188,8 +195,7 @@ pub fn validate_data_type(value: &str, data_type: DataType) -> RuleResult {
                 RuleResult::valid()
             } else {
                 RuleResult::invalid(format!(
-                    "Value '{}' is not a valid date (expected YYYY-MM-DD)",
-                    value
+                    "Value '{value}' is not a valid date (expected YYYY-MM-DD)"
                 ))
             }
         }
@@ -198,15 +204,15 @@ pub fn validate_data_type(value: &str, data_type: DataType) -> RuleResult {
             if (value.len() == 5 || value.len() == 8) && value.chars().nth(2) == Some(':') {
                 RuleResult::valid()
             } else {
-                RuleResult::invalid(format!("Value '{}' is not a valid time", value))
+                RuleResult::invalid(format!("Value '{value}' is not a valid time"))
             }
         }
-        DataType::String => RuleResult::valid(),
-        DataType::Binary => RuleResult::valid(),
+        DataType::String | DataType::Binary => RuleResult::valid(),
     }
 }
 
 /// Validate composite element
+#[must_use]
 pub fn validate_composite(node: &Node, constraints: &[Constraint]) -> RuleResult {
     if node.node_type != NodeType::Element && node.node_type != NodeType::Component {
         return RuleResult::invalid(format!(
@@ -226,8 +232,7 @@ pub fn validate_composite(node: &Node, constraints: &[Constraint]) -> RuleResult
 
     // Validate each component
     for (idx, (child, constraint)) in node.children.iter().zip(constraints.iter()).enumerate() {
-        if constraint.required && (child.value.is_none() || child.value.as_ref().unwrap().is_null())
-        {
+        if constraint.required && child.value.as_ref().is_none_or(edi_ir::Value::is_null) {
             return RuleResult::invalid(format!(
                 "Component {} in composite '{}' is required",
                 idx, node.name
@@ -246,6 +251,7 @@ pub struct SegmentOrderRule {
 }
 
 /// Validate segment order in a group
+#[must_use]
 pub fn validate_segment_order(segments: &[&Node], rules: &[SegmentOrderRule]) -> RuleResult {
     for rule in rules {
         let count = segments
@@ -285,6 +291,7 @@ pub struct ConditionalRule {
 }
 
 /// Validate conditional rules
+#[must_use]
 pub fn validate_conditional(nodes: &[&Node], rules: &[ConditionalRule]) -> RuleResult {
     for rule in rules {
         // Find trigger node
@@ -294,16 +301,14 @@ pub fn validate_conditional(nodes: &[&Node], rules: &[ConditionalRule]) -> RuleR
             let trigger_matches = trigger_node
                 .value
                 .as_ref()
-                .and_then(|v| v.as_string())
-                .map(|s| s == rule.trigger_value)
-                .unwrap_or(false);
+                .and_then(edi_ir::Value::as_string)
+                .is_some_and(|s| s == rule.trigger_value);
 
             if trigger_matches {
                 // Check that all required fields are present
                 for required_field in &rule.required_fields {
                     let found = nodes.iter().any(|n| {
-                        n.name == *required_field
-                            && n.value.as_ref().map(|v| !v.is_null()).unwrap_or(false)
+                        n.name == *required_field && n.value.as_ref().is_some_and(|v| !v.is_null())
                     });
 
                     if !found {
@@ -321,13 +326,13 @@ pub fn validate_conditional(nodes: &[&Node], rules: &[ConditionalRule]) -> RuleR
 }
 
 /// Validate a value against a code list
+#[must_use]
 pub fn validate_code_list(value: &str, codes: &[String]) -> RuleResult {
     if codes.contains(&value.to_string()) {
         RuleResult::valid()
     } else {
         RuleResult::invalid(format!(
-            "Value '{}' is not in allowed codes: {:?}",
-            value, codes
+            "Value '{value}' is not in allowed codes: {codes:?}"
         ))
     }
 }

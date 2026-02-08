@@ -1,6 +1,7 @@
 //! Validation reporter
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 /// Severity level for validation issues
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,12 +67,14 @@ impl ValidationIssue {
     }
 
     /// Set the path
+    #[must_use]
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = path.into();
         self
     }
 
     /// Set position
+    #[must_use]
     pub fn with_position(mut self, line: usize, column: usize) -> Self {
         self.line = Some(line);
         self.column = Some(column);
@@ -79,12 +82,14 @@ impl ValidationIssue {
     }
 
     /// Set error code
+    #[must_use]
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
         self.code = Some(code.into());
         self
     }
 
     /// Set segment element component positions
+    #[must_use]
     pub fn with_positions(
         mut self,
         segment: usize,
@@ -98,6 +103,7 @@ impl ValidationIssue {
     }
 
     /// Set context
+    #[must_use]
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
@@ -112,6 +118,7 @@ pub struct ValidationReport {
 
 impl ValidationReport {
     /// Create a new empty report
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -125,29 +132,34 @@ impl ValidationReport {
     pub fn error(&mut self, message: impl Into<String>) -> &mut ValidationIssue {
         let issue = ValidationIssue::new(Severity::Error, message);
         self.issues.push(issue);
-        self.issues.last_mut().unwrap()
+        let index = self.issues.len() - 1;
+        &mut self.issues[index]
     }
 
     /// Create and add a warning
     pub fn warning(&mut self, message: impl Into<String>) -> &mut ValidationIssue {
         let issue = ValidationIssue::new(Severity::Warning, message);
         self.issues.push(issue);
-        self.issues.last_mut().unwrap()
+        let index = self.issues.len() - 1;
+        &mut self.issues[index]
     }
 
     /// Create and add an info message
     pub fn info(&mut self, message: impl Into<String>) -> &mut ValidationIssue {
         let issue = ValidationIssue::new(Severity::Info, message);
         self.issues.push(issue);
-        self.issues.last_mut().unwrap()
+        let index = self.issues.len() - 1;
+        &mut self.issues[index]
     }
 
     /// Get all issues
+    #[must_use]
     pub fn all_issues(&self) -> &[ValidationIssue] {
         &self.issues
     }
 
     /// Get errors only
+    #[must_use]
     pub fn errors(&self) -> Vec<&ValidationIssue> {
         self.issues
             .iter()
@@ -156,6 +168,7 @@ impl ValidationReport {
     }
 
     /// Get warnings only
+    #[must_use]
     pub fn warnings(&self) -> Vec<&ValidationIssue> {
         self.issues
             .iter()
@@ -164,6 +177,7 @@ impl ValidationReport {
     }
 
     /// Get info messages only
+    #[must_use]
     pub fn infos(&self) -> Vec<&ValidationIssue> {
         self.issues
             .iter()
@@ -172,6 +186,7 @@ impl ValidationReport {
     }
 
     /// Get issues by severity
+    #[must_use]
     pub fn by_severity(&self, severity: Severity) -> Vec<&ValidationIssue> {
         self.issues
             .iter()
@@ -180,21 +195,25 @@ impl ValidationReport {
     }
 
     /// Check if report has any issues
+    #[must_use]
     pub fn has_issues(&self) -> bool {
         !self.issues.is_empty()
     }
 
     /// Check if report has errors
+    #[must_use]
     pub fn has_errors(&self) -> bool {
         self.issues.iter().any(|i| i.severity == Severity::Error)
     }
 
     /// Get total count of issues
+    #[must_use]
     pub fn count(&self) -> usize {
         self.issues.len()
     }
 
     /// Get count by severity
+    #[must_use]
     pub fn count_by_severity(&self, severity: Severity) -> usize {
         self.issues
             .iter()
@@ -218,6 +237,7 @@ pub struct ValidationReporter {
 
 impl ValidationReporter {
     /// Create a new validation reporter
+    #[must_use]
     pub fn new() -> Self {
         Self {
             report: ValidationReport::new(),
@@ -226,6 +246,7 @@ impl ValidationReporter {
     }
 
     /// Create with format options
+    #[must_use]
     pub fn with_options(format_options: FormatOptions) -> Self {
         Self {
             report: ValidationReport::new(),
@@ -249,16 +270,19 @@ impl ValidationReporter {
     }
 
     /// Get the report
+    #[must_use]
     pub fn get_report(&self) -> &ValidationReport {
         &self.report
     }
 
     /// Take ownership of the report
+    #[must_use]
     pub fn into_report(self) -> ValidationReport {
         self.report
     }
 
     /// Format all errors as a string
+    #[must_use]
     pub fn format_errors(&self) -> String {
         let mut output = String::new();
 
@@ -278,9 +302,9 @@ impl ValidationReporter {
 
         // Format errors first
         if let Some(errors) = by_severity.get(&Severity::Error) {
-            output.push_str(&format!("{} Error(s):\n", errors.len()));
+            let _ = writeln!(output, "{} Error(s):", errors.len());
             for error in errors {
-                output.push_str(&self.format_issue(error));
+                output.push_str(&Self::format_issue(error));
                 output.push('\n');
             }
             output.push('\n');
@@ -288,9 +312,9 @@ impl ValidationReporter {
 
         // Then warnings
         if let Some(warnings) = by_severity.get(&Severity::Warning) {
-            output.push_str(&format!("{} Warning(s):\n", warnings.len()));
+            let _ = writeln!(output, "{} Warning(s):", warnings.len());
             for warning in warnings {
-                output.push_str(&self.format_issue(warning));
+                output.push_str(&Self::format_issue(warning));
                 output.push('\n');
             }
             output.push('\n');
@@ -298,9 +322,9 @@ impl ValidationReporter {
 
         // Then info
         if let Some(infos) = by_severity.get(&Severity::Info) {
-            output.push_str(&format!("{} Info message(s):\n", infos.len()));
+            let _ = writeln!(output, "{} Info message(s):", infos.len());
             for info in infos {
-                output.push_str(&self.format_issue(info));
+                output.push_str(&Self::format_issue(info));
                 output.push('\n');
             }
         }
@@ -309,7 +333,7 @@ impl ValidationReporter {
     }
 
     /// Format a single issue
-    fn format_issue(&self, issue: &ValidationIssue) -> String {
+    fn format_issue(issue: &ValidationIssue) -> String {
         let mut parts = Vec::new();
 
         // Severity and code
@@ -326,11 +350,11 @@ impl ValidationReporter {
 
         // Position
         let pos_parts: Vec<String> = [
-            issue.line.map(|l| format!("Line {}", l)),
-            issue.column.map(|c| format!("Col {}", c)),
-            issue.segment_pos.map(|s| format!("Seg {}", s)),
-            issue.element_pos.map(|e| format!("Elem {}", e)),
-            issue.component_pos.map(|c| format!("Comp {}", c)),
+            issue.line.map(|l| format!("Line {l}")),
+            issue.column.map(|c| format!("Col {c}")),
+            issue.segment_pos.map(|s| format!("Seg {s}")),
+            issue.element_pos.map(|e| format!("Elem {e}")),
+            issue.component_pos.map(|c| format!("Comp {c}")),
         ]
         .into_iter()
         .flatten()
@@ -345,7 +369,7 @@ impl ValidationReporter {
 
         // Context
         if let Some(ref context) = issue.context {
-            parts.push(format!("  Context: {}", context));
+            parts.push(format!("  Context: {context}"));
         }
 
         parts.join(" ")
@@ -359,25 +383,40 @@ impl Default for ValidationReporter {
 }
 
 /// Options for formatting error output
+#[allow(clippy::exhaustive_enums)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayOption {
+    Show,
+    Hide,
+}
+
+impl DisplayOption {
+    #[must_use]
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Show)
+    }
+}
+
+/// Options for formatting error output
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
     /// Include error codes in output
-    pub show_codes: bool,
+    pub show_codes: DisplayOption,
     /// Include path in output
-    pub show_paths: bool,
+    pub show_paths: DisplayOption,
     /// Include positions in output
-    pub show_positions: bool,
+    pub show_positions: DisplayOption,
     /// Include context in output
-    pub show_context: bool,
+    pub show_context: DisplayOption,
 }
 
 impl Default for FormatOptions {
     fn default() -> Self {
         Self {
-            show_codes: true,
-            show_paths: true,
-            show_positions: true,
-            show_context: true,
+            show_codes: DisplayOption::Show,
+            show_paths: DisplayOption::Show,
+            show_positions: DisplayOption::Show,
+            show_context: DisplayOption::Show,
         }
     }
 }
@@ -626,19 +665,19 @@ mod tests {
     #[test]
     fn test_default_format_options() {
         let opts = FormatOptions::default();
-        assert!(opts.show_codes);
-        assert!(opts.show_paths);
-        assert!(opts.show_positions);
-        assert!(opts.show_context);
+        assert!(opts.show_codes.is_enabled());
+        assert!(opts.show_paths.is_enabled());
+        assert!(opts.show_positions.is_enabled());
+        assert!(opts.show_context.is_enabled());
     }
 
     #[test]
     fn test_reporter_with_options() {
         let opts = FormatOptions {
-            show_codes: false,
-            show_paths: true,
-            show_positions: false,
-            show_context: true,
+            show_codes: DisplayOption::Hide,
+            show_paths: DisplayOption::Show,
+            show_positions: DisplayOption::Hide,
+            show_context: DisplayOption::Show,
         };
 
         let reporter = ValidationReporter::with_options(opts);

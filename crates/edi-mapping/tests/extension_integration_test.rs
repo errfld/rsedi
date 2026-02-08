@@ -4,10 +4,10 @@
 
 use edi_ir::Value;
 use edi_mapping::{
-    extensions::{
-        create_math_utils_extension, create_string_utils_extension, Extension, ExtensionRegistry,
-    },
     MappingRuntime,
+    extensions::{
+        Extension, ExtensionRegistry, create_math_utils_extension, create_string_utils_extension,
+    },
 };
 
 #[test]
@@ -166,10 +166,12 @@ fn test_extension_error_handling() {
 
     let result = registry.call("error_test", "always_fails", &[]);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Intentional failure"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Intentional failure")
+    );
 }
 
 #[test]
@@ -178,10 +180,12 @@ fn test_extension_not_found() {
 
     let result = registry.call("nonexistent", "function", &[]);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Extension 'nonexistent' not found"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Extension 'nonexistent' not found")
+    );
 }
 
 #[test]
@@ -192,10 +196,12 @@ fn test_extension_function_not_found() {
 
     let result = registry.call("string_utils", "nonexistent", &[]);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Function 'nonexistent' not found"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Function 'nonexistent' not found")
+    );
 }
 
 #[test]

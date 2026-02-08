@@ -1,3 +1,9 @@
+#![deny(warnings)]
+#![deny(rust_2018_idioms)]
+#![deny(unsafe_op_in_unsafe_fn)]
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+
 //! # edi-validation
 //!
 //! Validation engine for structural rules and codelists.
@@ -38,9 +44,9 @@ pub use engine::{
 };
 pub use reporter::{Severity, ValidationIssue, ValidationReport, ValidationReporter};
 pub use rules::{
-    validate_code_list, validate_conditional, validate_data_type, validate_length,
-    validate_pattern, validate_required, validate_segment_order, ConditionalRule, Constraint,
-    DataType, SegmentOrderRule,
+    ConditionalRule, Constraint, DataType, SegmentOrderRule, validate_code_list,
+    validate_conditional, validate_data_type, validate_length, validate_pattern, validate_required,
+    validate_segment_order,
 };
 
 use thiserror::Error;
@@ -61,12 +67,20 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Convenience function to validate a document with default settings
+///
+/// # Errors
+///
+/// Returns an error when validation execution fails.
 pub fn validate(doc: &edi_ir::Document) -> Result<ValidationResult> {
     let engine = ValidationEngine::new();
     engine.validate(doc)
 }
 
 /// Convenience function to validate a document against a schema
+///
+/// # Errors
+///
+/// Returns an error when schema-based validation execution fails.
 pub fn validate_with_schema(
     doc: &edi_ir::Document,
     schema: &edi_schema::Schema,

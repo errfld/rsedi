@@ -38,7 +38,7 @@ mod tests {
         assert!(matches!(policy, AcceptancePolicy::AcceptAll));
 
         // AcceptAll should be the default
-        let default: AcceptancePolicy = Default::default();
+        let default = AcceptancePolicy::default();
         assert!(matches!(default, AcceptancePolicy::AcceptAll));
     }
 
@@ -98,7 +98,7 @@ mod tests {
         assert!(matches!(strictness, StrictnessLevel::Permissive));
 
         // Permissive should be the default
-        let default: StrictnessLevel = Default::default();
+        let default = StrictnessLevel::default();
         assert!(matches!(default, StrictnessLevel::Permissive));
     }
 
@@ -129,38 +129,57 @@ mod tests {
 
     #[test]
     fn test_policy_combinations() {
-        // Test all 9 combinations
-        let policies = vec![
-            AcceptancePolicy::AcceptAll,
-            AcceptancePolicy::FailAll,
-            AcceptancePolicy::Quarantine,
+        let expected = [
+            (
+                (AcceptancePolicy::AcceptAll, StrictnessLevel::Permissive),
+                false,
+            ),
+            (
+                (AcceptancePolicy::AcceptAll, StrictnessLevel::Standard),
+                false,
+            ),
+            ((AcceptancePolicy::AcceptAll, StrictnessLevel::Strict), true),
+            (
+                (AcceptancePolicy::FailAll, StrictnessLevel::Permissive),
+                true,
+            ),
+            ((AcceptancePolicy::FailAll, StrictnessLevel::Standard), true),
+            ((AcceptancePolicy::FailAll, StrictnessLevel::Strict), true),
+            (
+                (AcceptancePolicy::Quarantine, StrictnessLevel::Permissive),
+                false,
+            ),
+            (
+                (AcceptancePolicy::Quarantine, StrictnessLevel::Standard),
+                false,
+            ),
+            (
+                (AcceptancePolicy::Quarantine, StrictnessLevel::Strict),
+                true,
+            ),
         ];
 
-        let strictness_levels = vec![
-            StrictnessLevel::Permissive,
-            StrictnessLevel::Standard,
-            StrictnessLevel::Strict,
-        ];
-
-        for policy in &policies {
-            for strictness in &strictness_levels {
-                // Verify each combination can be created
-                let _combo = (*policy, *strictness);
-            }
+        for ((policy, strictness), expected_should_abort) in expected {
+            let should_abort = matches!(policy, AcceptancePolicy::FailAll)
+                || matches!(strictness, StrictnessLevel::Strict);
+            assert_eq!(
+                should_abort, expected_should_abort,
+                "unexpected behavior for {policy:?} + {strictness:?}"
+            );
         }
     }
 
     #[test]
     fn test_policy_debug() {
         let policy = AcceptancePolicy::Quarantine;
-        let debug_str = format!("{:?}", policy);
+        let debug_str = format!("{policy:?}");
         assert!(debug_str.contains("Quarantine"));
     }
 
     #[test]
     fn test_strictness_debug() {
         let strictness = StrictnessLevel::Strict;
-        let debug_str = format!("{:?}", strictness);
+        let debug_str = format!("{strictness:?}");
         assert!(debug_str.contains("Strict"));
     }
 }

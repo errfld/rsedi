@@ -1,4 +1,6 @@
 //! Document representation for the Intermediate Representation
+#![allow(clippy::must_use_candidate)] // Builder/constructor API intentionally omits pervasive #[must_use].
+#![allow(clippy::return_self_not_must_use)] // Fluent builder methods return Self for ergonomics.
 
 use crate::metadata::SourceInfo;
 use crate::node::Node;
@@ -44,6 +46,7 @@ pub struct DocumentMetadata {
 
 impl Document {
     /// Create a new document with the given root node
+    #[must_use]
     pub fn new(root: Node) -> Self {
         Self {
             root,
@@ -53,6 +56,7 @@ impl Document {
     }
 
     /// Create a new document with metadata
+    #[must_use]
     pub fn with_metadata(root: Node, metadata: DocumentMetadata) -> Self {
         Self {
             root,
@@ -62,6 +66,7 @@ impl Document {
     }
 
     /// Set the schema reference
+    #[must_use]
     pub fn with_schema(mut self, schema_ref: impl Into<String>) -> Self {
         self.schema_ref = Some(schema_ref.into());
         self

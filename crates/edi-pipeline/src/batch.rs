@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::{AcceptancePolicy, Error, Result, StrictnessLevel};
+use crate::{AcceptancePolicy, Error, Result, StrictnessLevel, numeric::usize_to_f64};
 
 /// A batch of EDI files to be processed together
 #[derive(Debug)]
@@ -102,7 +102,8 @@ impl Default for BatchConfig {
 
 impl<T> Batch<T> {
     /// Create a new batch with the given configuration
-    pub fn new(config: BatchConfig) -> Self {
+    #[must_use]
+    pub fn new(config: &BatchConfig) -> Self {
         Self {
             items: VecDeque::with_capacity(config.max_size),
             max_size: config.max_size,
@@ -114,14 +115,19 @@ impl<T> Batch<T> {
     }
 
     /// Create a batch with default configuration
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self::new(BatchConfig {
+        Self::new(&BatchConfig {
             max_size: capacity,
             ..Default::default()
         })
     }
 
     /// Add an item to the batch
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if adding to the batch fails.
     pub fn add(&mut self, id: impl Into<String>, data: T) -> Result<bool> {
         if self.is_full() {
             return Ok(false);
@@ -141,21 +147,25 @@ impl<T> Batch<T> {
     }
 
     /// Check if the batch is full
+    #[must_use]
     pub fn is_full(&self) -> bool {
         self.items.len() >= self.max_size
     }
 
     /// Check if the batch is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     /// Get the number of items in the batch
+    #[must_use]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
     /// Check if the batch has timed out
+    #[must_use]
     pub fn is_timed_out(&self) -> bool {
         match self.max_duration {
             Some(duration) => self.created_at.elapsed() >= duration,
@@ -164,11 +174,13 @@ impl<T> Batch<T> {
     }
 
     /// Check if the batch should be flushed
+    #[must_use]
     pub fn should_flush(&self) -> bool {
         self.is_full() || self.is_timed_out()
     }
 
     /// Get all items in the batch
+    #[must_use]
     pub fn items(&self) -> &VecDeque<BatchItem<T>> {
         &self.items
     }
@@ -179,37 +191,50 @@ impl<T> Batch<T> {
     }
 
     /// Mark an item as successful
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no batch item exists for `id`.
     pub fn mark_success(&mut self, id: &str) -> Result<()> {
         if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
             item.status = ItemStatus::Success;
             Ok(())
         } else {
-            Err(Error::Batch(format!("Item not found: {}", id)))
+            Err(Error::Batch(format!("Item not found: {id}")))
         }
     }
 
     /// Mark an item as failed
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no batch item exists for `id`.
     pub fn mark_failed(&mut self, id: &str, error: impl Into<String>) -> Result<()> {
         if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
             item.status = ItemStatus::Failed;
             item.error = Some(error.into());
             Ok(())
         } else {
-            Err(Error::Batch(format!("Item not found: {}", id)))
+            Err(Error::Batch(format!("Item not found: {id}")))
         }
     }
 
     /// Mark an item for retry
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no batch item exists for `id`.
     pub fn mark_retry(&mut self, id: &str) -> Result<()> {
         if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
             item.status = ItemStatus::Retrying;
             Ok(())
         } else {
-            Err(Error::Batch(format!("Item not found: {}", id)))
+            Err(Error::Batch(format!("Item not found: {id}")))
         }
     }
 
     /// Get items that need to be retried
+    #[must_use]
     pub fn get_retry_items(&self) -> Vec<&BatchItem<T>> {
         self.items
             .iter()
@@ -224,6 +249,7 @@ impl<T> Batch<T> {
     }
 
     /// Drain items into a result
+    #[must_use]
     pub fn into_result(self) -> BatchResult<T> {
         let start = Instant::now();
 
@@ -264,17 +290,20 @@ impl<T> Batch<T> {
     }
 
     /// Create a new batch from a collection of items
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input items exceed batch capacity.
     pub fn from_items(
         items: impl IntoIterator<Item = (impl Into<String>, T)>,
-        config: BatchConfig,
+        config: &BatchConfig,
     ) -> Result<Self> {
         let mut batch = Self::new(config);
 
         for (idx, (id, data)) in items.into_iter().enumerate() {
             if !batch.add(id, data)? {
                 return Err(Error::Batch(format!(
-                    "Batch capacity exceeded at item {}",
-                    idx
+                    "Batch capacity exceeded at item {idx}"
                 )));
             }
         }
@@ -285,6 +314,7 @@ impl<T> Batch<T> {
 
 impl<T> BatchItem<T> {
     /// Create a new batch item
+    #[must_use]
     pub fn new(id: impl Into<String>, data: T) -> Self {
         Self {
             id: id.into(),
@@ -296,6 +326,7 @@ impl<T> BatchItem<T> {
     }
 
     /// Check if the item should be retried
+    #[must_use]
     pub fn should_retry(&self, _max_retries: u32) -> bool {
         matches!(self.status, ItemStatus::Failed | ItemStatus::Retrying)
     }
@@ -303,6 +334,7 @@ impl<T> BatchItem<T> {
 
 impl BatchResult<()> {
     /// Create an empty batch result
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             successful: Vec::new(),
@@ -314,17 +346,19 @@ impl BatchResult<()> {
     }
 
     /// Check if all items succeeded
+    #[must_use]
     pub fn all_succeeded(&self) -> bool {
         self.failed.is_empty() && self.retry.is_empty()
     }
 
     /// Get success rate as a percentage
+    #[must_use]
     pub fn success_rate(&self) -> f64 {
         let total = self.successful.len() + self.failed.len() + self.retry.len();
         if total == 0 {
             100.0
         } else {
-            (self.successful.len() as f64 / total as f64) * 100.0
+            (usize_to_f64(self.successful.len()) / usize_to_f64(total)) * 100.0
         }
     }
 }
@@ -383,7 +417,7 @@ mod tests {
             strictness: StrictnessLevel::default(),
         };
 
-        let batch = Batch::<i32>::new(config);
+        let batch = Batch::<i32>::new(&config);
         assert!(!batch.is_timed_out());
 
         // Wait for timeout
@@ -427,7 +461,7 @@ mod tests {
 
         let items = vec![("first", 1), ("second", 2), ("third", 3)];
 
-        let batch = Batch::from_items(items, config).unwrap();
+        let batch = Batch::from_items(items, &config).unwrap();
 
         let ids: Vec<_> = batch.items().iter().map(|i| i.id.clone()).collect();
         assert_eq!(ids, vec!["first", "second", "third"]);
@@ -477,7 +511,8 @@ mod tests {
             processed_count: 3,
         };
 
-        assert_eq!(result.success_rate(), 66.66666666666666);
+        let expected = 66.666_666_666_666_66;
+        assert!((result.success_rate() - expected).abs() < 1e-12);
         assert!(!result.all_succeeded());
     }
 
@@ -487,7 +522,7 @@ mod tests {
         assert!(result.successful.is_empty());
         assert!(result.failed.is_empty());
         assert!(result.retry.is_empty());
-        assert_eq!(result.success_rate(), 100.0);
+        assert!((result.success_rate() - 100.0).abs() < f64::EPSILON);
         assert!(result.all_succeeded());
     }
 
@@ -503,7 +538,7 @@ mod tests {
         };
 
         let items = vec![("1", 1), ("2", 2), ("3", 3)];
-        let result = Batch::from_items(items, config);
+        let result = Batch::from_items(items, &config);
 
         assert!(result.is_err());
     }

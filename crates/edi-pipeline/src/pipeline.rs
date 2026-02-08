@@ -1,36 +1,39 @@
 //! Pipeline orchestration
 //!
-//! This module provides the main Pipeline for processing EDI files
-//! with support for validation, mapping, batching, and streaming.
+//! This module provides the main `Pipeline` for processing EDI files with
+//! support for validation, mapping, batching, streaming, and quarantine.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::{
-    AcceptancePolicy, BatchConfig, Error, QuarantineReason, QuarantineStore, Result,
-    StrictnessLevel,
+    AcceptancePolicy, Batch, BatchConfig, Error, QuarantineReason, QuarantineStore, Result,
+    StreamConfig, StreamMessage, StreamProcessor, StrictnessLevel, numeric::u128_to_f64,
+    numeric::usize_to_f64,
 };
 use edi_adapter_edifact::EdifactParser;
-use tracing::warn;
+use edi_adapter_edifact::parser::ParseWarning;
+use edi_ir::{Document, Node, NodeType, Value};
+use tracing::{debug, info_span, warn};
 
-/// Configuration for the pipeline
+/// Configuration for the pipeline.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
-    /// Acceptance policy for handling errors
+    /// Acceptance policy for handling errors.
     pub acceptance_policy: AcceptancePolicy,
-    /// Strictness level for validation
+    /// Strictness level for validation.
     pub strictness: StrictnessLevel,
-    /// Batch configuration
+    /// Batch configuration.
     pub batch_config: BatchConfig,
-    /// Whether to enable streaming mode
+    /// Whether to enable streaming mode.
     pub streaming: bool,
-    /// Maximum file size in bytes
+    /// Maximum file size in bytes.
     pub max_file_size: usize,
-    /// Whether to validate before processing
+    /// Whether to validate before processing.
     pub validate_before_processing: bool,
-    /// Whether to apply mapping transformations
+    /// Whether to apply mapping transformations.
     pub enable_mapping: bool,
-    /// Output format
+    /// Output format.
     pub output_format: OutputFormat,
 }
 
@@ -41,7 +44,7 @@ impl Default for PipelineConfig {
             strictness: StrictnessLevel::default(),
             batch_config: BatchConfig::default(),
             streaming: false,
-            max_file_size: 100 * 1024 * 1024, // 100MB
+            max_file_size: 100 * 1024 * 1024,
             validate_before_processing: true,
             enable_mapping: true,
             output_format: OutputFormat::default(),
@@ -49,157 +52,214 @@ impl Default for PipelineConfig {
     }
 }
 
-/// Output format for processed documents
+/// Output format for processed documents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
-    /// Native EDI format
+    /// Native EDI format.
     #[default]
     Edifact,
-    /// JSON format
+    /// JSON format.
     Json,
-    /// CSV format
+    /// CSV format.
     Csv,
-    /// XML format
+    /// XML format.
     Xml,
 }
 
-/// Main pipeline for processing EDI files
+/// Main pipeline for processing EDI files.
 #[derive(Debug)]
 pub struct Pipeline {
-    /// Pipeline configuration
     config: PipelineConfig,
-    /// Quarantine store for failed messages
     quarantine: QuarantineStore<Vec<u8>>,
-    /// Processing statistics
     stats: PipelineStats,
-    /// Whether pipeline is running
     running: bool,
 }
 
-/// Statistics for pipeline processing
+/// Statistics for pipeline processing.
 #[derive(Debug, Default, Clone)]
 pub struct PipelineStats {
-    /// Total files processed
+    /// Total files processed.
     pub files_processed: usize,
-    /// Total files successful
+    /// Total files successful.
     pub files_successful: usize,
-    /// Total files failed
+    /// Total files failed.
     pub files_failed: usize,
-    /// Total files quarantined
+    /// Total files quarantined.
     pub files_quarantined: usize,
-    /// Total messages processed
+    /// Total messages processed.
     pub messages_processed: usize,
-    /// Total messages successful
+    /// Total messages successful.
     pub messages_successful: usize,
-    /// Total messages failed
+    /// Total messages failed.
     pub messages_failed: usize,
-    /// Total validation errors
+    /// Total validation errors.
     pub validation_errors: usize,
-    /// Total processing time
+    /// Total bytes processed.
+    pub bytes_processed: usize,
+    /// Total processing time.
     pub total_processing_time: Duration,
-    /// Pipeline start time
+    /// Pipeline start time.
     pub started_at: Option<Instant>,
 }
 
-/// Result of processing a single file
+/// Result of processing a single file.
 #[derive(Debug, Clone)]
 pub struct FileResult {
-    /// File path
+    /// File path.
     pub path: String,
-    /// Whether processing succeeded
+    /// Whether processing succeeded under the configured policy.
     pub success: bool,
-    /// Error message if failed
+    /// Error message if failed.
     pub error: Option<String>,
-    /// Number of messages in file
+    /// Number of processed messages in file.
     pub message_count: usize,
-    /// Number of successful messages
+    /// Number of successful messages.
     pub success_count: usize,
-    /// Number of failed messages
+    /// Number of failed messages.
     pub failure_count: usize,
-    /// Processing duration
+    /// Processing duration.
     pub duration: Duration,
-    /// Whether file was quarantined
+    /// Whether any message was quarantined.
     pub quarantined: bool,
 }
 
-/// Result of processing a batch of files
+/// Result of processing a batch of files.
 #[derive(Debug)]
 pub struct PipelineBatchResult {
-    /// Results for individual files
+    /// Results for individual files.
     pub file_results: Vec<FileResult>,
-    /// Total files processed
+    /// Total files requested.
     pub total_files: usize,
-    /// Successful files
+    /// Successful files.
     pub successful_files: usize,
-    /// Failed files
+    /// Failed files.
     pub failed_files: usize,
-    /// Quarantined files
+    /// Quarantined files.
     pub quarantined_files: usize,
-    /// Total processing time
+    /// Total processing time.
     pub total_duration: Duration,
-    /// Whether batch succeeded overall
+    /// Whether batch succeeded overall.
     pub batch_success: bool,
 }
 
-/// Metrics collected during processing
+/// Metrics collected during processing.
 #[derive(Debug, Default, Clone)]
 pub struct PipelineMetrics {
-    /// Files per second
+    /// Files per second.
     pub files_per_second: f64,
-    /// Messages per second
+    /// Messages per second.
     pub messages_per_second: f64,
-    /// Average file processing time
+    /// Average file processing time.
     pub avg_file_time_ms: f64,
-    /// Error rate percentage
+    /// Error rate percentage.
     pub error_rate: f64,
-    /// Current throughput
+    /// Current throughput.
     pub throughput_mbps: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct MessageProcessingConfig {
+    validate_before_processing: bool,
+    enable_mapping: bool,
+    strictness: StrictnessLevel,
+    output_format: OutputFormat,
+}
+
+#[derive(Debug, Clone)]
+struct MessageOutcome {
+    message_id: String,
+    success: bool,
+    error: Option<String>,
+    validation_failures: usize,
+    quarantine_reason: QuarantineReason,
+    quarantine_payload: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+struct FileSummary {
+    message_count: usize,
+    success_count: usize,
+    failure_count: usize,
+    validation_failures: usize,
+    quarantined: bool,
+    file_error: Option<String>,
+    fatal_error: Option<String>,
+}
+
+#[derive(Debug)]
+struct StreamWorkItem {
+    index: usize,
+    warning_count: usize,
+    document: Document,
+}
+
 impl Pipeline {
-    /// Create a new pipeline with the given configuration
+    /// Create a new pipeline with the given configuration.
+    #[must_use]
     pub fn new(config: PipelineConfig) -> Self {
         Self {
-            config: config.clone(),
+            config,
             quarantine: QuarantineStore::with_defaults(),
             stats: PipelineStats::default(),
             running: false,
         }
     }
 
-    /// Create a pipeline with default configuration
+    /// Create a pipeline with default configuration.
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(PipelineConfig::default())
     }
 
-    /// Start the pipeline
+    /// Start the pipeline.
     pub fn start(&mut self) {
         self.running = true;
         self.stats.started_at = Some(Instant::now());
     }
 
-    /// Stop the pipeline
+    /// Stop the pipeline.
     pub fn stop(&mut self) {
         self.running = false;
     }
 
-    /// Check if pipeline is running
+    /// Check if pipeline is running.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.running
     }
 
-    /// Process a single file
+    /// Process a single file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading, parsing, validation, mapping, or policy
+    /// handling fails.
     pub fn process_file<P: AsRef<Path>>(&mut self, path: P) -> Result<FileResult> {
-        let start = Instant::now();
-        let path_str = path.as_ref().to_string_lossy().to_string();
+        self.process_file_internal(path.as_ref(), None, None)
+    }
 
-        // Check if file exists
-        if !path.as_ref().exists() {
-            return Err(Error::Pipeline(format!("File not found: {}", path_str)));
+    fn process_file_internal(
+        &mut self,
+        path: &Path,
+        validator: Option<&dyn Validator>,
+        mapper: Option<&dyn Mapper>,
+    ) -> Result<FileResult> {
+        let start = Instant::now();
+        let path_str = path.to_string_lossy().to_string();
+
+        let file_span = info_span!(
+            "pipeline.process_file",
+            path = %path_str,
+            streaming = self.config.streaming,
+            policy = ?self.config.acceptance_policy,
+        );
+        let _file_guard = file_span.enter();
+
+        if !path.exists() {
+            return Err(Error::Pipeline(format!("File not found: {path_str}")));
         }
 
-        // Check file size
-        let metadata = std::fs::metadata(&path)?;
+        let metadata = std::fs::metadata(path)?;
         if metadata.len() > self.config.max_file_size as u64 {
             return Err(Error::Pipeline(format!(
                 "File too large: {} bytes (max: {} bytes)",
@@ -208,365 +268,1022 @@ impl Pipeline {
             )));
         }
 
-        // Read raw bytes to support non-UTF8 payloads.
-        let content = std::fs::read(&path)?;
+        let content = std::fs::read(path)?;
 
-        // Simulate processing (in real implementation, this would parse and process EDI)
-        let result = self.process_content(&content, &path_str);
-
+        let processing_result = self.process_content(&content, &path_str, validator, mapper);
         let duration = start.elapsed();
 
-        // Update stats
         self.stats.files_processed += 1;
+        self.stats.bytes_processed += content.len();
         self.stats.total_processing_time += duration;
 
-        match &result {
-            Ok(file_result) => {
-                if file_result.success {
+        match processing_result {
+            Ok(mut summary) => {
+                if summary.message_count == 0
+                    && matches!(self.config.acceptance_policy, AcceptancePolicy::Quarantine)
+                {
+                    let quarantine_message = summary
+                        .file_error
+                        .clone()
+                        .unwrap_or_else(|| "No messages were parsed from file".to_string());
+                    self.quarantine.quarantine(
+                        &path_str,
+                        content.clone(),
+                        QuarantineReason::ProcessingError,
+                        quarantine_message,
+                    )?;
+                    summary.quarantined = true;
+                }
+
+                self.stats.messages_processed += summary.message_count;
+                self.stats.messages_successful += summary.success_count;
+                self.stats.messages_failed += summary.failure_count;
+                self.stats.validation_errors += summary.validation_failures;
+
+                if summary.quarantined {
+                    self.stats.files_quarantined += 1;
+                }
+
+                if let Some(fatal_error) = summary.fatal_error {
+                    self.stats.files_failed += 1;
+                    return Err(Error::Pipeline(fatal_error));
+                }
+
+                let mut success = true;
+                let mut error = None;
+
+                if summary.message_count == 0 {
+                    success = false;
+                    error = summary
+                        .file_error
+                        .clone()
+                        .or_else(|| Some("No messages were parsed from file".to_string()));
+                } else if matches!(self.config.acceptance_policy, AcceptancePolicy::FailAll)
+                    && summary.failure_count > 0
+                {
+                    success = false;
+                    error.clone_from(&summary.file_error);
+                }
+
+                if success {
                     self.stats.files_successful += 1;
-                    self.stats.messages_successful += file_result.success_count;
                 } else {
                     self.stats.files_failed += 1;
-                    self.stats.messages_failed += file_result.failure_count;
-
-                    // Quarantine if configured
-                    if matches!(self.config.acceptance_policy, AcceptancePolicy::Quarantine) {
-                        self.quarantine.quarantine(
-                            &path_str,
-                            content.clone(),
-                            QuarantineReason::ProcessingError,
-                            file_result.error.clone().unwrap_or_default(),
-                        )?;
-                    }
                 }
+
+                Ok(FileResult {
+                    path: path_str,
+                    success,
+                    error,
+                    message_count: summary.message_count,
+                    success_count: summary.success_count,
+                    failure_count: summary.failure_count,
+                    duration,
+                    quarantined: summary.quarantined,
+                })
             }
-            Err(e) => {
+            Err(error) => {
                 self.stats.files_failed += 1;
+                if matches!(self.config.acceptance_policy, AcceptancePolicy::Quarantine) {
+                    self.quarantine.quarantine(
+                        &path_str,
+                        content,
+                        QuarantineReason::ProcessingError,
+                        error.to_string(),
+                    )?;
+                    self.stats.files_quarantined += 1;
+                }
+                Err(error)
+            }
+        }
+    }
 
-                // Handle error based on policy
-                match self.config.acceptance_policy {
-                    AcceptancePolicy::AcceptAll => {
-                        // Continue processing
-                    }
-                    AcceptancePolicy::FailAll => {
-                        return Err(e.clone());
-                    }
-                    AcceptancePolicy::Quarantine => {
-                        self.quarantine.quarantine(
-                            &path_str,
-                            content.clone(),
-                            QuarantineReason::ProcessingError,
-                            e.to_string(),
-                        )?;
-                        self.stats.files_quarantined += 1;
-                    }
+    fn process_content(
+        &mut self,
+        content: &[u8],
+        path: &str,
+        validator: Option<&dyn Validator>,
+        mapper: Option<&dyn Mapper>,
+    ) -> Result<FileSummary> {
+        let parser = EdifactParser::new();
+        let parse_outcome = parser
+            .parse_with_warnings(content, path)
+            .map_err(|error| Error::Pipeline(format!("Failed to parse {path}: {error}")))?;
+
+        if parse_outcome.documents.is_empty() {
+            let mut summary = FileSummary {
+                file_error: Some("No messages were parsed from file".to_string()),
+                ..FileSummary::default()
+            };
+
+            if matches!(self.config.acceptance_policy, AcceptancePolicy::FailAll) {
+                summary.fatal_error = summary.file_error.clone();
+            }
+
+            return Ok(summary);
+        }
+
+        let warning_counts =
+            warning_counts_for_documents(&parse_outcome.documents, &parse_outcome.warnings);
+        let processing_config = self.processing_config();
+        let stop_on_failure = matches!(self.config.acceptance_policy, AcceptancePolicy::FailAll);
+
+        let outcomes = if self.config.streaming && validator.is_none() && mapper.is_none() {
+            self.process_documents_streaming(
+                processing_config,
+                parse_outcome.documents,
+                &warning_counts,
+                stop_on_failure,
+            )?
+        } else {
+            if self.config.streaming && (validator.is_some() || mapper.is_some()) {
+                warn!(
+                    "Streaming mode is enabled but custom validator/mapper is in use; falling back to sequential processing"
+                );
+            }
+
+            process_documents_sequential(
+                processing_config,
+                parse_outcome.documents,
+                &warning_counts,
+                validator,
+                mapper,
+                stop_on_failure,
+            )
+        };
+
+        let mut summary = FileSummary {
+            message_count: outcomes.len(),
+            ..FileSummary::default()
+        };
+
+        for outcome in outcomes {
+            let message_span = info_span!(
+                "pipeline.process_message",
+                path = %path,
+                message_id = %outcome.message_id,
+                success = outcome.success,
+            );
+            let _message_guard = message_span.enter();
+
+            if outcome.success {
+                summary.success_count += 1;
+                continue;
+            }
+
+            summary.failure_count += 1;
+            summary.validation_failures += outcome.validation_failures;
+
+            if summary.file_error.is_none() {
+                summary.file_error.clone_from(&outcome.error);
+            }
+
+            match self.config.acceptance_policy {
+                AcceptancePolicy::AcceptAll => {}
+                AcceptancePolicy::FailAll => {
+                    summary.fatal_error = outcome.error;
+                    break;
+                }
+                AcceptancePolicy::Quarantine => {
+                    let quarantine_id = format!("{}:{}", path, outcome.message_id);
+                    self.quarantine.quarantine(
+                        quarantine_id,
+                        outcome.quarantine_payload,
+                        outcome.quarantine_reason,
+                        outcome
+                            .error
+                            .unwrap_or_else(|| "Message failed without detailed error".to_string()),
+                    )?;
+                    summary.quarantined = true;
                 }
             }
         }
 
-        result
+        Ok(summary)
     }
 
-    /// Process file content (simulated)
-    fn process_content(&self, content: &[u8], path: &str) -> Result<FileResult> {
-        let start = Instant::now();
+    fn process_documents_streaming(
+        &self,
+        processing_config: MessageProcessingConfig,
+        documents: Vec<Document>,
+        warning_counts: &[usize],
+        stop_on_failure: bool,
+    ) -> Result<Vec<MessageOutcome>> {
+        let stream_config = StreamConfig {
+            max_concurrency: self.config.batch_config.max_size.clamp(1, 64),
+            channel_buffer_size: self.config.batch_config.max_size.saturating_mul(2).max(1),
+            acceptance_policy: self.config.acceptance_policy,
+            strictness: self.config.strictness,
+            ..StreamConfig::default()
+        };
 
-        // Simulate validation
-        if self.config.validate_before_processing {
-            // In real implementation, validate against schema
-            if content.is_empty() {
-                return Ok(FileResult {
-                    path: path.to_string(),
-                    success: false,
-                    error: Some("Empty file".to_string()),
-                    message_count: 0,
-                    success_count: 0,
-                    failure_count: 0,
-                    duration: start.elapsed(),
-                    quarantined: false,
-                });
+        let work_items = documents
+            .into_iter()
+            .enumerate()
+            .map(|(index, document)| StreamWorkItem {
+                index,
+                warning_count: warning_counts.get(index).copied().unwrap_or(0),
+                document,
+            })
+            .collect::<Vec<_>>();
+
+        let run = move || async move {
+            let processor = StreamProcessor::new(stream_config);
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<MessageOutcome>(1);
+            let mut outcomes = Vec::with_capacity(work_items.len());
+
+            for work in work_items {
+                processor
+                    .submit(StreamMessage::new(work.index, work))
+                    .await
+                    .map_err(|error| Error::Streaming(error.to_string()))?;
+
+                let sender = tx.clone();
+                let config_for_message = processing_config;
+
+                processor
+                    .process_single(move |item| async move {
+                        let outcome = process_single_message(
+                            config_for_message,
+                            item.index,
+                            item.warning_count,
+                            &item.document,
+                            None,
+                            None,
+                        );
+                        let should_abort = stop_on_failure && !outcome.success;
+                        sender.send(outcome).await.map_err(|_| {
+                            Error::Streaming(
+                                "Streaming processor failed to publish message result".to_string(),
+                            )
+                        })?;
+                        if should_abort {
+                            Err(Error::Streaming("Message processing failed".to_string()))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .await
+                    .map_err(|error| Error::Streaming(error.to_string()))?;
+
+                let outcome = rx.recv().await.ok_or_else(|| {
+                    Error::Streaming(
+                        "Streaming processor did not return a message result".to_string(),
+                    )
+                })?;
+
+                let is_failure = !outcome.success;
+                outcomes.push(outcome);
+
+                if is_failure && stop_on_failure {
+                    break;
+                }
             }
-        }
 
-        // Simulate message processing
-        // In real implementation, parse EDI and process messages
-        let message_count = self.count_messages(content, path);
-        let success_count = message_count;
-        let failure_count = 0;
-
-        // Simulate mapping if enabled
-        if self.config.enable_mapping {
-            // Apply transformations
-        }
-
-        let duration = start.elapsed();
-
-        Ok(FileResult {
-            path: path.to_string(),
-            success: true,
-            error: None,
-            message_count,
-            success_count,
-            failure_count,
-            duration,
-            quarantined: false,
-        })
-    }
-
-    fn count_messages(&self, content: &[u8], source_name: &str) -> usize {
-        let parser = EdifactParser::new();
-        match parser.parse_with_warnings(content, source_name) {
-            Ok(outcome) if !outcome.documents.is_empty() => return outcome.documents.len(),
-            Ok(outcome) => {
-                warn!(
-                    source = source_name,
-                    content_len = content.len(),
-                    warning_count = outcome.warnings.len(),
-                    "Parser produced no complete documents; falling back to UNH segment counting"
-                );
-            }
-            Err(err) => {
-                warn!(
-                    source = source_name,
-                    content_len = content.len(),
-                    parser_error = ?err,
-                    "EDIFACT parser failed; falling back to UNH segment counting"
-                );
-            }
-        }
-
-        let (element_separator, segment_terminator) = detect_separators(content);
-        let fallback_count =
-            count_segment_occurrences(content, b"UNH", element_separator, segment_terminator);
-
-        if fallback_count == 0 {
-            warn!(
-                source = source_name,
-                content_len = content.len(),
-                fallback_count,
-                forced_min = 1,
-                "UNH fallback found no messages; forcing minimum message count of 1"
+            let stream_stats = processor.get_stats().await;
+            let checkpoint = processor.get_checkpoint().await;
+            debug!(
+                received = stream_stats.received,
+                succeeded = stream_stats.succeeded,
+                failed = stream_stats.failed,
+                checkpoint_position = checkpoint.position,
+                "Completed streaming file processing"
             );
-        }
 
-        fallback_count.max(1)
+            Ok(outcomes)
+        };
+
+        run_streaming_task(run)
     }
 
-    /// Process multiple files as a batch
+    fn processing_config(&self) -> MessageProcessingConfig {
+        MessageProcessingConfig {
+            validate_before_processing: self.config.validate_before_processing,
+            enable_mapping: self.config.enable_mapping,
+            strictness: self.config.strictness,
+            output_format: self.config.output_format,
+        }
+    }
+
+    /// Process multiple files as a batch.
+    ///
+    /// This is intended to be used by CLI batch commands and supports retry and
+    /// partial-success policies through `BatchConfig`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if batch processing cannot continue under configured
+    /// acceptance policy or underlying I/O/processing fails.
     pub fn process_batch<P: AsRef<Path>>(&mut self, paths: &[P]) -> Result<PipelineBatchResult> {
         let start = Instant::now();
-        let mut file_results = Vec::new();
-        let mut successful = 0;
-        let mut failed = 0;
-        let mut quarantined = 0;
+        let mut file_results = Vec::with_capacity(paths.len());
+        let mut path_index = 0usize;
+        let mut stop_processing = false;
 
-        for path in paths {
-            match self.process_file(path) {
-                Ok(result) => {
-                    if result.success {
-                        successful += 1;
-                    } else {
-                        failed += 1;
-                    }
-                    if result.quarantined {
-                        quarantined += 1;
-                    }
-                    file_results.push(result);
+        while path_index < paths.len() && !stop_processing {
+            let mut batch = Batch::new(&self.config.batch_config);
+
+            while path_index < paths.len() && !batch.is_full() {
+                let item_path = paths[path_index].as_ref().to_path_buf();
+                let item_id = format!("file-{path_index}");
+                batch.add(item_id, item_path)?;
+                path_index += 1;
+            }
+
+            for item in batch.items() {
+                if stop_processing {
+                    break;
                 }
-                Err(e) => {
-                    failed += 1;
-                    file_results.push(FileResult {
-                        path: path.as_ref().to_string_lossy().to_string(),
-                        success: false,
-                        error: Some(e.to_string()),
-                        message_count: 0,
-                        success_count: 0,
-                        failure_count: 0,
-                        duration: Duration::ZERO,
-                        quarantined: false,
-                    });
 
-                    // Handle based on policy
-                    match self.config.acceptance_policy {
-                        AcceptancePolicy::FailAll => {
+                let file_path = item.data.clone();
+                let max_attempts = self.config.batch_config.max_retries.saturating_add(1);
+                let mut attempt = 0u32;
+
+                loop {
+                    attempt += 1;
+
+                    match self.process_file(&file_path) {
+                        Ok(file_result) => {
+                            let should_retry = !file_result.success && attempt < max_attempts;
+                            if should_retry {
+                                warn!(
+                                    path = %file_path.display(),
+                                    attempt,
+                                    max_attempts,
+                                    "Retrying file after policy-level failure"
+                                );
+                                continue;
+                            }
+
+                            if matches!(self.config.acceptance_policy, AcceptancePolicy::FailAll)
+                                && !file_result.success
+                            {
+                                stop_processing = true;
+                            }
+
+                            file_results.push(file_result);
                             break;
                         }
-                        _ => continue,
+                        Err(error) => {
+                            if attempt < max_attempts {
+                                warn!(
+                                    path = %file_path.display(),
+                                    attempt,
+                                    max_attempts,
+                                    error = %error,
+                                    "Retrying file after processing error"
+                                );
+                                continue;
+                            }
+
+                            file_results.push(FileResult {
+                                path: file_path.to_string_lossy().to_string(),
+                                success: false,
+                                error: Some(error.to_string()),
+                                message_count: 0,
+                                success_count: 0,
+                                failure_count: 0,
+                                duration: Duration::ZERO,
+                                quarantined: false,
+                            });
+
+                            if matches!(self.config.acceptance_policy, AcceptancePolicy::FailAll) {
+                                stop_processing = true;
+                            }
+
+                            break;
+                        }
                     }
                 }
             }
         }
 
-        let total_duration = start.elapsed();
+        let successful_files = file_results.iter().filter(|result| result.success).count();
+        let failed_files = file_results.len().saturating_sub(successful_files);
+        let quarantined_files = file_results
+            .iter()
+            .filter(|result| result.quarantined)
+            .count();
 
-        // Determine overall batch success based on policy
         let batch_success = match self.config.acceptance_policy {
-            AcceptancePolicy::AcceptAll => true,
-            AcceptancePolicy::FailAll => failed == 0,
-            AcceptancePolicy::Quarantine => true,
+            AcceptancePolicy::FailAll => failed_files == 0,
+            AcceptancePolicy::AcceptAll | AcceptancePolicy::Quarantine => true,
         };
 
         Ok(PipelineBatchResult {
             file_results,
             total_files: paths.len(),
-            successful_files: successful,
-            failed_files: failed,
-            quarantined_files: quarantined,
-            total_duration,
+            successful_files,
+            failed_files,
+            quarantined_files,
+            total_duration: start.elapsed(),
             batch_success,
         })
     }
 
-    /// Process with validation integration
+    /// Process a file with a validator integration point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing/validation/policy handling fails.
     pub fn process_with_validation<P: AsRef<Path>>(
         &mut self,
         path: P,
-        _validator: &dyn Validator,
+        validator: &dyn Validator,
     ) -> Result<FileResult> {
-        // In real implementation, integrate with validation engine
-        self.process_file(path)
+        self.process_file_internal(path.as_ref(), Some(validator), None)
     }
 
-    /// Process with mapping integration
+    /// Process a file with a mapper integration point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing/mapping/policy handling fails.
     pub fn process_with_mapping<P: AsRef<Path>>(
         &mut self,
         path: P,
-        _mapper: &dyn Mapper,
+        mapper: &dyn Mapper,
     ) -> Result<FileResult> {
-        // In real implementation, integrate with mapping engine
-        self.process_file(path)
+        self.process_file_internal(path.as_ref(), None, Some(mapper))
     }
 
-    /// Get current statistics
+    /// Get current statistics.
+    #[must_use]
     pub fn stats(&self) -> &PipelineStats {
         &self.stats
     }
 
-    /// Get metrics
+    /// Get metrics.
+    #[must_use]
     pub fn metrics(&self) -> PipelineMetrics {
         let elapsed = self
             .stats
             .started_at
-            .map(|t| t.elapsed())
+            .map(|started| started.elapsed())
             .unwrap_or_default();
 
         let elapsed_secs = elapsed.as_secs_f64();
+        let bytes_per_second = if elapsed_secs > 0.0 {
+            usize_to_f64(self.stats.bytes_processed) / elapsed_secs
+        } else {
+            0.0
+        };
 
         PipelineMetrics {
             files_per_second: if elapsed_secs > 0.0 {
-                self.stats.files_processed as f64 / elapsed_secs
+                usize_to_f64(self.stats.files_processed) / elapsed_secs
             } else {
                 0.0
             },
             messages_per_second: if elapsed_secs > 0.0 {
-                self.stats.messages_processed as f64 / elapsed_secs
+                usize_to_f64(self.stats.messages_processed) / elapsed_secs
             } else {
                 0.0
             },
             avg_file_time_ms: if self.stats.files_processed > 0 {
-                self.stats.total_processing_time.as_millis() as f64
-                    / self.stats.files_processed as f64
+                u128_to_f64(self.stats.total_processing_time.as_millis())
+                    / usize_to_f64(self.stats.files_processed)
             } else {
                 0.0
             },
             error_rate: if self.stats.files_processed > 0 {
-                (self.stats.files_failed as f64 / self.stats.files_processed as f64) * 100.0
+                (usize_to_f64(self.stats.files_failed) / usize_to_f64(self.stats.files_processed))
+                    * 100.0
             } else {
                 0.0
             },
-            throughput_mbps: 0.0, // Would calculate from actual bytes processed
+            throughput_mbps: bytes_per_second * 8.0 / 1_000_000.0,
         }
     }
 
-    /// Get quarantine store
+    /// Get quarantine store.
+    #[must_use]
     pub fn quarantine(&self) -> &QuarantineStore<Vec<u8>> {
         &self.quarantine
     }
 
-    /// Get mutable quarantine store
+    /// Get mutable quarantine store.
     pub fn quarantine_mut(&mut self) -> &mut QuarantineStore<Vec<u8>> {
         &mut self.quarantine
     }
 
-    /// Reset statistics
+    /// Reset statistics.
     pub fn reset_stats(&mut self) {
         self.stats = PipelineStats::default();
     }
 
-    /// Get configuration
+    /// Get configuration.
+    #[must_use]
     pub fn config(&self) -> &PipelineConfig {
         &self.config
     }
 }
 
-/// Trait for validation integration
+/// Trait for validation integration.
 pub trait Validator {
-    /// Validate content
+    /// Validate content and return validation messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation execution fails.
     fn validate(&self, content: &str) -> Result<Vec<ValidationError>>;
 }
 
-/// Validation error
+/// Validation error.
 #[derive(Debug, Clone)]
 pub struct ValidationError {
-    /// Error message
+    /// Error message.
     pub message: String,
-    /// Error location
+    /// Error location.
     pub location: Option<String>,
-    /// Severity
+    /// Severity.
     pub severity: ErrorSeverity,
 }
 
-/// Error severity
+/// Error severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorSeverity {
-    /// Warning
+    /// Warning.
     Warning,
-    /// Error
+    /// Error.
     Error,
-    /// Critical
+    /// Critical.
     Critical,
 }
 
-/// Trait for mapping integration
+/// Trait for mapping integration.
 pub trait Mapper {
-    /// Apply mapping transformation
+    /// Apply mapping transformation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when mapping execution fails.
     fn map(&self, content: &str) -> Result<String>;
 }
 
-fn detect_separators(content: &[u8]) -> (u8, u8) {
-    if content.starts_with(b"UNA") && content.len() >= 9 {
-        (content[4], content[8])
+fn process_documents_sequential(
+    config: MessageProcessingConfig,
+    documents: Vec<Document>,
+    warning_counts: &[usize],
+    validator: Option<&dyn Validator>,
+    mapper: Option<&dyn Mapper>,
+    stop_on_failure: bool,
+) -> Vec<MessageOutcome> {
+    let mut outcomes = Vec::with_capacity(documents.len());
+
+    for (index, document) in documents.into_iter().enumerate() {
+        let warning_count = warning_counts.get(index).copied().unwrap_or(0);
+        let outcome =
+            process_single_message(config, index, warning_count, &document, validator, mapper);
+        let failed = !outcome.success;
+        outcomes.push(outcome);
+        if failed && stop_on_failure {
+            break;
+        }
+    }
+
+    outcomes
+}
+
+fn process_single_message(
+    config: MessageProcessingConfig,
+    index: usize,
+    warning_count: usize,
+    document: &Document,
+    validator: Option<&dyn Validator>,
+    mapper: Option<&dyn Mapper>,
+) -> MessageOutcome {
+    let message_id = message_id(document, index);
+
+    let canonical_json = match serde_json::to_string(document) {
+        Ok(json) => json,
+        Err(error) => {
+            return MessageOutcome {
+                message_id,
+                success: false,
+                error: Some(format!("Failed to serialize document: {error}")),
+                validation_failures: 0,
+                quarantine_reason: QuarantineReason::ProcessingError,
+                quarantine_payload: Vec::new(),
+            };
+        }
+    };
+
+    let validation_errors = match collect_validation_errors(
+        config,
+        warning_count,
+        document,
+        &canonical_json,
+        validator,
+    ) {
+        Ok(errors) => errors,
+        Err(error) => {
+            return MessageOutcome {
+                message_id,
+                success: false,
+                error: Some(error),
+                validation_failures: 1,
+                quarantine_reason: QuarantineReason::ValidationFailed,
+                quarantine_payload: canonical_json.into_bytes(),
+            };
+        }
+    };
+
+    let validation_failure_count = validation_errors
+        .iter()
+        .filter(|error| should_fail_validation(config.strictness, error.severity))
+        .count();
+
+    if validation_failure_count > 0 {
+        return MessageOutcome {
+            message_id,
+            success: false,
+            error: Some(first_validation_failure_message(
+                &validation_errors,
+                config.strictness,
+            )),
+            validation_failures: validation_failure_count,
+            quarantine_reason: QuarantineReason::ValidationFailed,
+            quarantine_payload: canonical_json.into_bytes(),
+        };
+    }
+
+    let mapped_payload = if config.enable_mapping {
+        if let Some(mapper) = mapper {
+            match mapper.map(&canonical_json) {
+                Ok(mapped_doc) => Some(mapped_doc),
+                Err(error) => {
+                    return MessageOutcome {
+                        message_id,
+                        success: false,
+                        error: Some(format!("Mapping failed: {error}")),
+                        validation_failures: 0,
+                        quarantine_reason: QuarantineReason::ProcessingError,
+                        quarantine_payload: canonical_json.into_bytes(),
+                    };
+                }
+            }
+        } else {
+            None
+        }
     } else {
-        (b'+', b'\'')
+        None
+    };
+
+    let final_payload =
+        match render_output(config.output_format, document, mapped_payload.as_deref()) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return MessageOutcome {
+                    message_id,
+                    success: false,
+                    error: Some(error),
+                    validation_failures: 0,
+                    quarantine_reason: QuarantineReason::ProcessingError,
+                    quarantine_payload: mapped_payload.unwrap_or(canonical_json).into_bytes(),
+                };
+            }
+        };
+
+    debug!(
+        message_id = %message_id,
+        output_bytes = final_payload.len(),
+        "Successfully processed message"
+    );
+
+    MessageOutcome {
+        message_id,
+        success: true,
+        error: None,
+        validation_failures: 0,
+        quarantine_reason: QuarantineReason::ProcessingError,
+        quarantine_payload: Vec::new(),
     }
 }
 
-fn count_segment_occurrences(
-    content: &[u8],
-    segment_tag: &[u8; 3],
-    element_separator: u8,
-    segment_terminator: u8,
-) -> usize {
-    content
-        .split(|&byte| byte == segment_terminator)
-        .filter(|segment| {
-            let trimmed = trim_ascii_whitespace(segment);
-            trimmed.len() > 3 && &trimmed[..3] == segment_tag && trimmed[3] == element_separator
-        })
-        .count()
+fn first_validation_failure_message(
+    validation_errors: &[ValidationError],
+    strictness: StrictnessLevel,
+) -> String {
+    validation_errors
+        .iter()
+        .find(|error| should_fail_validation(strictness, error.severity))
+        .map_or_else(
+            || "Validation failed".to_string(),
+            |error| error.message.clone(),
+        )
 }
 
-fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
-    let start = bytes
+fn collect_validation_errors(
+    config: MessageProcessingConfig,
+    warning_count: usize,
+    document: &Document,
+    payload: &str,
+    validator: Option<&dyn Validator>,
+) -> std::result::Result<Vec<ValidationError>, String> {
+    if !config.validate_before_processing {
+        return Ok(Vec::new());
+    }
+
+    if let Some(validator) = validator {
+        return validator
+            .validate(payload)
+            .map_err(|error| error.to_string());
+    }
+
+    let mut errors = Vec::new();
+
+    if document.root.children.is_empty() {
+        errors.push(ValidationError {
+            message: "Document has no segment content".to_string(),
+            location: Some("/MESSAGE".to_string()),
+            severity: ErrorSeverity::Error,
+        });
+    }
+
+    if warning_count > 0 {
+        errors.push(ValidationError {
+            message: format!("Parser emitted {warning_count} warning(s) for this message"),
+            location: document.metadata.message_refs.first().cloned(),
+            severity: ErrorSeverity::Warning,
+        });
+    }
+
+    Ok(errors)
+}
+
+fn should_fail_validation(strictness: StrictnessLevel, severity: ErrorSeverity) -> bool {
+    match strictness {
+        StrictnessLevel::Strict => true,
+        StrictnessLevel::Permissive | StrictnessLevel::Standard => {
+            matches!(severity, ErrorSeverity::Error | ErrorSeverity::Critical)
+        }
+    }
+}
+
+fn warning_counts_for_documents(documents: &[Document], warnings: &[ParseWarning]) -> Vec<usize> {
+    documents
         .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|b| !b.is_ascii_whitespace())
-        .map(|idx| idx + 1)
-        .unwrap_or(start);
-    &bytes[start..end]
+        .enumerate()
+        .map(|(index, document)| {
+            let doc_ref = document.metadata.message_refs.first();
+            warnings
+                .iter()
+                .filter(|warning| match (&warning.message_ref, doc_ref) {
+                    (Some(warning_ref), Some(message_ref)) => warning_ref == message_ref,
+                    (None, None) => true,
+                    _ => false,
+                })
+                .count()
+                .max(usize::from(
+                    doc_ref.is_none() && index == 0 && !warnings.is_empty(),
+                ))
+        })
+        .collect()
+}
+
+fn message_id(document: &Document, index: usize) -> String {
+    document
+        .metadata
+        .message_refs
+        .first()
+        .cloned()
+        .unwrap_or_else(|| format!("message-{}", index + 1))
+}
+
+fn run_streaming_task<F, Fut>(run: F) -> Result<Vec<MessageOutcome>>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Vec<MessageOutcome>>> + Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    Error::Streaming(format!("Failed to build streaming runtime: {error}"))
+                })?;
+            runtime.block_on(run())
+        });
+
+        handle.join().map_err(|panic_payload| {
+            let message = panic_payload
+                .downcast_ref::<&str>()
+                .map(|value| (*value).to_string())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            Error::Streaming(format!("Streaming worker thread panicked: {message}"))
+        })?
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                Error::Streaming(format!("Failed to build streaming runtime: {error}"))
+            })?;
+        runtime.block_on(run())
+    }
+}
+
+fn render_output(
+    format: OutputFormat,
+    document: &Document,
+    mapped_payload: Option<&str>,
+) -> std::result::Result<String, String> {
+    match format {
+        OutputFormat::Json => mapped_payload.map_or_else(
+            || serde_json::to_string_pretty(document).map_err(|error| error.to_string()),
+            |mapped| Ok(mapped.to_string()),
+        ),
+        OutputFormat::Csv => {
+            Ok(mapped_payload.map_or_else(|| serialize_csv(document), str::to_string))
+        }
+        OutputFormat::Xml => {
+            Ok(mapped_payload.map_or_else(|| serialize_xml(document), str::to_string))
+        }
+        OutputFormat::Edifact => mapped_payload.map_or_else(
+            || serialize_edifact(document),
+            |mapped| Ok(mapped.to_string()),
+        ),
+    }
+}
+
+fn serialize_csv(document: &Document) -> String {
+    let mut rows = Vec::new();
+    collect_rows(&document.root, &mut rows);
+
+    let mut output = String::from("name,node_type,value\n");
+    for (name, node_type, value) in rows {
+        output.push_str(&escape_csv_field(&name));
+        output.push(',');
+        output.push_str(&escape_csv_field(&node_type));
+        output.push(',');
+        output.push_str(&escape_csv_field(&value));
+        output.push('\n');
+    }
+
+    output
+}
+
+fn collect_rows(node: &Node, rows: &mut Vec<(String, String, String)>) {
+    let value = node
+        .value
+        .as_ref()
+        .and_then(Value::as_string)
+        .unwrap_or_default();
+    rows.push((node.name.clone(), format!("{:?}", node.node_type), value));
+
+    for child in &node.children {
+        collect_rows(child, rows);
+    }
+}
+
+fn escape_csv_field(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') {
+        let escaped = value.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        value.to_string()
+    }
+}
+
+fn serialize_xml(document: &Document) -> String {
+    let mut xml = String::from("<document>");
+    append_node_xml(&document.root, &mut xml);
+    xml.push_str("</document>");
+    xml
+}
+
+fn append_node_xml(node: &Node, output: &mut String) {
+    let element_name = sanitize_xml_name(&node.name);
+    output.push('<');
+    output.push_str(&element_name);
+    output.push('>');
+
+    if let Some(value) = node.value.as_ref().and_then(Value::as_string) {
+        output.push_str(&xml_escape(&value));
+    }
+
+    for child in &node.children {
+        append_node_xml(child, output);
+    }
+
+    output.push_str("</");
+    output.push_str(&element_name);
+    output.push('>');
+}
+
+fn sanitize_xml_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "item".to_string();
+    }
+
+    let mut sanitized = String::with_capacity(trimmed.len() + 1);
+    for (index, ch) in trimmed.chars().enumerate() {
+        if (index == 0 && is_valid_xml_name_start(ch)) || (index > 0 && is_valid_xml_name_char(ch))
+        {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+    }
+
+    if sanitized
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("xml"))
+    {
+        sanitized.insert(0, '_');
+    }
+
+    sanitized
+}
+
+fn is_valid_xml_name_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_valid_xml_name_char(ch: char) -> bool {
+    is_valid_xml_name_start(ch) || ch.is_ascii_digit() || ch == '-' || ch == '.'
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn serialize_edifact(document: &Document) -> std::result::Result<String, String> {
+    let mut segments = Vec::new();
+    collect_edifact_segments(&document.root, &mut segments);
+
+    if segments.is_empty() {
+        return Err("Cannot serialize document without segment nodes".to_string());
+    }
+
+    Ok(segments.join("\n"))
+}
+
+fn escape_edifact_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '?' | '+' | ':' | '\'' => {
+                escaped.push('?');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn collect_edifact_segments(node: &Node, segments: &mut Vec<String>) {
+    if matches!(node.node_type, NodeType::Segment) {
+        let mut segment = node.name.clone();
+        let mut elements = Vec::new();
+
+        for element in &node.children {
+            if !matches!(element.node_type, NodeType::Element) {
+                continue;
+            }
+
+            let value = if element.children.is_empty() {
+                element
+                    .value
+                    .as_ref()
+                    .and_then(Value::as_string)
+                    .map(|value| escape_edifact_value(&value))
+                    .unwrap_or_default()
+            } else {
+                element
+                    .children
+                    .iter()
+                    .filter_map(|component| component.value.as_ref().and_then(Value::as_string))
+                    .map(|component| escape_edifact_value(&component))
+                    .collect::<Vec<_>>()
+                    .join(":")
+            };
+
+            elements.push(value);
+        }
+
+        if !elements.is_empty() {
+            segment.push('+');
+            segment.push_str(&elements.join("+"));
+        }
+
+        segment.push('\'');
+        segments.push(segment);
+    }
+
+    for child in &node.children {
+        collect_edifact_segments(child, segments);
+    }
 }
 
 impl Default for Pipeline {
@@ -578,329 +1295,395 @@ impl Default for Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::NamedTempFile;
 
     fn create_test_file(content: &str) -> NamedTempFile {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(content.as_bytes()).unwrap();
+        let mut file = NamedTempFile::new().expect("temp file");
+        file.write_all(content.as_bytes()).expect("write file");
         file
     }
 
-    fn create_test_file_bytes(content: &[u8]) -> NamedTempFile {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(content).unwrap();
-        file
-    }
+    fn valid_multi_message_file(message_count: usize) -> String {
+        let mut edi = String::from("UNA:+.? '\nUNB+UNOA:3+SENDER+RECEIVER+240101:1200+1'\n");
 
-    #[test]
-    fn test_pipeline_creation() {
-        let config = PipelineConfig::default();
-        let pipeline = Pipeline::new(config);
-
-        assert!(!pipeline.is_running());
-        assert_eq!(pipeline.stats().files_processed, 0);
-    }
-
-    #[test]
-    fn test_process_single_file() {
-        let mut pipeline = Pipeline::with_defaults();
-        pipeline.start();
-
-        let file = create_test_file("UNA:+.? 'UNB+UNOA:3+SENDER+RECEIVER+200101:1200+1234567'");
-
-        let result = pipeline.process_file(file.path()).unwrap();
-        assert!(result.success);
-        assert_eq!(result.message_count, 1);
-
-        assert_eq!(pipeline.stats().files_processed, 1);
-        assert_eq!(pipeline.stats().files_successful, 1);
-    }
-
-    #[test]
-    fn test_process_file_counts_messages_from_unh() {
-        let mut pipeline = Pipeline::with_defaults();
-        pipeline.start();
-
-        let data = b"UNH+1+ORDERS:D:96A:UN'\nBGM+220+12345+9'\nUNT+3+1'\n\
-UNH+2+ORDERS:D:96A:UN'\nBGM+220+67890+9'\nUNT+3+2'";
-        let file = create_test_file_bytes(data);
-
-        let result = pipeline.process_file(file.path()).unwrap();
-        assert!(result.success);
-        assert_eq!(result.message_count, 2);
-    }
-
-    #[test]
-    fn test_process_file_non_utf8_content_is_supported() {
-        let mut pipeline = Pipeline::with_defaults();
-        pipeline.start();
-
-        let data = b"UNH+1+ORDERS:D:96A:UN'\xFF\xFEBGM+220+12345+9'UNT+3+1'";
-        let file = create_test_file_bytes(data);
-
-        let result = pipeline.process_file(file.path()).unwrap();
-        assert!(result.success);
-        assert_eq!(result.message_count, 1);
-    }
-
-    #[test]
-    fn test_process_batch() {
-        let mut pipeline = Pipeline::with_defaults();
-        pipeline.start();
-
-        let file1 = create_test_file("Message 1");
-        let file2 = create_test_file("Message 2");
-        let file3 = create_test_file("Message 3");
-
-        let paths = vec![file1.path(), file2.path(), file3.path()];
-        let result = pipeline.process_batch(&paths).unwrap();
-
-        assert_eq!(result.total_files, 3);
-        assert_eq!(result.successful_files, 3);
-        assert_eq!(result.failed_files, 0);
-        assert!(result.batch_success);
-    }
-
-    #[test]
-    fn test_pipeline_with_validation() {
-        let mut pipeline = Pipeline::with_defaults();
-        pipeline.start();
-
-        // Test with empty file (should fail validation)
-        let empty_file = create_test_file("");
-
-        let result = pipeline.process_file(empty_file.path()).unwrap();
-        assert!(!result.success);
-        assert!(result.error.is_some());
-    }
-
-    #[test]
-    fn test_pipeline_with_mapping() {
-        let config = PipelineConfig {
-            enable_mapping: true,
-            ..Default::default()
-        };
-        let mut pipeline = Pipeline::new(config);
-        pipeline.start();
-
-        let file = create_test_file("Test message");
-        let result = pipeline.process_file(file.path()).unwrap();
-
-        assert!(result.success);
-    }
-
-    #[test]
-    fn test_error_handling() {
-        let mut pipeline = Pipeline::with_defaults();
-        pipeline.start();
-
-        // Try to process non-existent file
-        let result = pipeline.process_file("/nonexistent/file.edi");
-        assert!(result.is_err());
-
-        assert_eq!(pipeline.stats().files_processed, 0);
-    }
-
-    #[test]
-    fn test_metrics_collection() {
-        let mut pipeline = Pipeline::with_defaults();
-        pipeline.start();
-
-        // Process some files
-        for i in 0..5 {
-            let file = create_test_file(&format!("Message {}", i));
-            pipeline.process_file(file.path()).unwrap();
+        for index in 1..=message_count {
+            writeln!(
+                edi,
+                "UNH+{index}+ORDERS:D:96A:UN'\nBGM+220+PO{index}+9'\nUNT+3+{index}'"
+            )
+            .expect("write to string");
         }
 
-        let metrics = pipeline.metrics();
-        assert!(metrics.files_per_second >= 0.0);
-        assert!(metrics.avg_file_time_ms >= 0.0);
-        assert_eq!(metrics.error_rate, 0.0);
+        writeln!(edi, "UNZ+{message_count}+1'").expect("write to string");
+        edi
     }
 
-    #[test]
-    fn test_accept_all_policy() {
-        let config = PipelineConfig {
-            acceptance_policy: AcceptancePolicy::AcceptAll,
-            ..Default::default()
-        };
-        let mut pipeline = Pipeline::new(config);
-        pipeline.start();
-
-        let file1 = create_test_file("Valid");
-        let file2 = create_test_file("Also valid");
-
-        let paths = vec![file1.path(), file2.path()];
-        let result = pipeline.process_batch(&paths).unwrap();
-
-        assert!(result.batch_success);
+    fn partial_message_file() -> String {
+        [
+            "UNA:+.? '",
+            "UNB+UNOA:3+SENDER+RECEIVER+240101:1200+1'",
+            "UNH+1+ORDERS:D:96A:UN'",
+            "BGM+220+PO1+9'",
+            "UNZ+1+1'",
+            "",
+        ]
+        .join("\n")
     }
 
-    #[test]
-    fn test_reject_all_policy() {
-        let config = PipelineConfig {
-            acceptance_policy: AcceptancePolicy::FailAll,
-            ..Default::default()
-        };
-        let mut pipeline = Pipeline::new(config);
-        pipeline.start();
-
-        // This policy would stop on first error
-        // For this test, we just verify the policy is set correctly
-        assert!(matches!(
-            pipeline.config().acceptance_policy,
-            AcceptancePolicy::FailAll
-        ));
+    struct FailNthValidator {
+        fail_on_call: usize,
+        calls: AtomicUsize,
     }
 
-    #[test]
-    fn test_quarantine_policy() {
-        let config = PipelineConfig {
-            acceptance_policy: AcceptancePolicy::Quarantine,
-            validate_before_processing: true,
-            ..Default::default()
-        };
-        let mut pipeline = Pipeline::new(config);
-        pipeline.start();
+    impl FailNthValidator {
+        fn new(fail_on_call: usize) -> Self {
+            Self {
+                fail_on_call,
+                calls: AtomicUsize::new(0),
+            }
+        }
 
-        // Process an empty file which should fail validation
-        let empty_file = create_test_file("");
-        let result = pipeline.process_file(empty_file.path()).unwrap();
-
-        assert!(!result.success);
-        // File should be in quarantine
-        assert!(!pipeline.quarantine().is_empty());
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
     }
 
-    #[test]
-    fn test_strict_strictness() {
-        let config = PipelineConfig {
-            strictness: StrictnessLevel::Strict,
-            ..Default::default()
-        };
-        let pipeline = Pipeline::new(config);
-
-        assert!(matches!(
-            pipeline.config().strictness,
-            StrictnessLevel::Strict
-        ));
-    }
-
-    #[test]
-    fn test_moderate_strictness() {
-        let config = PipelineConfig {
-            strictness: StrictnessLevel::Standard,
-            ..Default::default()
-        };
-        let pipeline = Pipeline::new(config);
-
-        assert!(matches!(
-            pipeline.config().strictness,
-            StrictnessLevel::Standard
-        ));
-    }
-
-    #[test]
-    fn test_lenient_strictness() {
-        let config = PipelineConfig {
-            strictness: StrictnessLevel::Permissive,
-            ..Default::default()
-        };
-        let pipeline = Pipeline::new(config);
-
-        assert!(matches!(
-            pipeline.config().strictness,
-            StrictnessLevel::Permissive
-        ));
-    }
-
-    #[test]
-    fn test_policy_combinations() {
-        // Test all combinations of Policy and Strictness
-        let policies = vec![
-            AcceptancePolicy::AcceptAll,
-            AcceptancePolicy::FailAll,
-            AcceptancePolicy::Quarantine,
-        ];
-
-        let strictness_levels = vec![
-            StrictnessLevel::Permissive,
-            StrictnessLevel::Standard,
-            StrictnessLevel::Strict,
-        ];
-
-        for policy in &policies {
-            for strictness in &strictness_levels {
-                let config = PipelineConfig {
-                    acceptance_policy: *policy,
-                    strictness: *strictness,
-                    ..Default::default()
-                };
-                let _pipeline = Pipeline::new(config);
-                // Just verify creation succeeds for all combinations
+    impl Validator for FailNthValidator {
+        fn validate(&self, _content: &str) -> Result<Vec<ValidationError>> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_on_call {
+                Ok(vec![ValidationError {
+                    message: format!("Validation failed on message {call}"),
+                    location: Some(format!("/MESSAGE[{call}]")),
+                    severity: ErrorSeverity::Error,
+                }])
+            } else {
+                Ok(Vec::new())
             }
         }
     }
 
+    struct CountingMapper {
+        calls: AtomicUsize,
+    }
+
+    impl CountingMapper {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Mapper for CountingMapper {
+        fn map(&self, content: &str) -> Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(content.to_string())
+        }
+    }
+
+    fn sample_document() -> Document {
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut segment = Node::new("BGM", NodeType::Segment);
+        segment.add_child(Node::with_value(
+            "1004",
+            NodeType::Element,
+            Value::String("PO1".to_string()),
+        ));
+        root.add_child(segment);
+        Document::new(root)
+    }
+
     #[test]
-    fn test_file_too_large() {
+    fn test_render_output_without_mapper_uses_selected_format() {
+        let document = sample_document();
+
+        let json = render_output(OutputFormat::Json, &document, None).expect("json");
+        assert!(json.contains("\"name\": \"ROOT\""));
+
+        let csv = render_output(OutputFormat::Csv, &document, None).expect("csv");
+        assert!(csv.starts_with("name,node_type,value\n"));
+
+        let xml = render_output(OutputFormat::Xml, &document, None).expect("xml");
+        assert!(xml.starts_with("<document>"));
+
+        let edi = render_output(OutputFormat::Edifact, &document, None).expect("edi");
+        assert_eq!(edi, "BGM+PO1'");
+    }
+
+    #[test]
+    fn test_render_output_prefers_mapper_payload_when_present() {
+        let document = sample_document();
+        let mapped = "mapped-payload";
+
+        let json = render_output(OutputFormat::Json, &document, Some(mapped)).expect("json");
+        let csv = render_output(OutputFormat::Csv, &document, Some(mapped)).expect("csv");
+        let xml = render_output(OutputFormat::Xml, &document, Some(mapped)).expect("xml");
+        let edi = render_output(OutputFormat::Edifact, &document, Some(mapped)).expect("edi");
+
+        assert_eq!(json, mapped);
+        assert_eq!(csv, mapped);
+        assert_eq!(xml, mapped);
+        assert_eq!(edi, mapped);
+    }
+
+    #[test]
+    fn test_xml_output_sanitizes_invalid_element_names() {
+        let mut root = Node::new("xml root", NodeType::Root);
+        root.add_child(Node::with_value(
+            "9 bad tag",
+            NodeType::Element,
+            Value::String("value".to_string()),
+        ));
+
+        let xml = render_output(OutputFormat::Xml, &Document::new(root), None).expect("xml");
+
+        assert!(xml.contains("<_xml_root>"));
+        assert!(xml.contains("<__bad_tag>value</__bad_tag>"));
+    }
+
+    #[test]
+    fn test_edifact_output_escapes_release_characters() {
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut segment = Node::new("FTX", NodeType::Segment);
+        segment.add_child(Node::with_value(
+            "4440",
+            NodeType::Element,
+            Value::String("A+B:C'?D".to_string()),
+        ));
+        root.add_child(segment);
+
+        let edi = render_output(OutputFormat::Edifact, &Document::new(root), None).expect("edi");
+
+        assert_eq!(edi, "FTX+A?+B?:C?'??D'");
+    }
+
+    #[test]
+    fn test_process_file_multi_message_counts() {
+        let mut pipeline = Pipeline::with_defaults();
+        pipeline.start();
+
+        let file = create_test_file(&valid_multi_message_file(2));
+        let result = pipeline.process_file(file.path()).expect("process file");
+
+        assert!(result.success);
+        assert_eq!(result.message_count, 2);
+        assert_eq!(result.success_count, 2);
+        assert_eq!(result.failure_count, 0);
+
+        let stats = pipeline.stats();
+        assert_eq!(stats.files_processed, 1);
+        assert_eq!(stats.files_successful, 1);
+        assert_eq!(stats.messages_processed, 2);
+        assert_eq!(stats.messages_successful, 2);
+        assert_eq!(stats.messages_failed, 0);
+    }
+
+    #[test]
+    fn test_process_with_validation_fail_all_stops_on_first_failure() {
         let config = PipelineConfig {
-            max_file_size: 10, // Very small
-            ..Default::default()
+            acceptance_policy: AcceptancePolicy::FailAll,
+            ..PipelineConfig::default()
         };
         let mut pipeline = Pipeline::new(config);
         pipeline.start();
 
-        let file = create_test_file("This content is definitely more than 10 bytes");
-        let result = pipeline.process_file(file.path());
+        let validator = FailNthValidator::new(2);
+        let file = create_test_file(&valid_multi_message_file(3));
 
-        assert!(result.is_err());
+        let error = pipeline
+            .process_with_validation(file.path(), &validator)
+            .expect_err("should fail fast");
+
+        assert!(error.to_string().contains("Validation failed on message 2"));
+        assert_eq!(validator.call_count(), 2);
+
+        let stats = pipeline.stats();
+        assert_eq!(stats.files_processed, 1);
+        assert_eq!(stats.files_failed, 1);
+        assert_eq!(stats.messages_processed, 2);
+        assert_eq!(stats.messages_successful, 1);
+        assert_eq!(stats.messages_failed, 1);
     }
 
     #[test]
-    fn test_reset_stats() {
+    fn test_process_with_validation_quarantine_continues() {
+        let config = PipelineConfig {
+            acceptance_policy: AcceptancePolicy::Quarantine,
+            ..PipelineConfig::default()
+        };
+        let mut pipeline = Pipeline::new(config);
+        pipeline.start();
+
+        let validator = FailNthValidator::new(2);
+        let file = create_test_file(&valid_multi_message_file(3));
+
+        let result = pipeline
+            .process_with_validation(file.path(), &validator)
+            .expect("quarantine should continue");
+
+        assert!(result.success);
+        assert_eq!(result.message_count, 3);
+        assert_eq!(result.success_count, 2);
+        assert_eq!(result.failure_count, 1);
+        assert!(result.quarantined);
+        assert_eq!(pipeline.quarantine().len(), 1);
+
+        let stats = pipeline.stats();
+        assert_eq!(stats.files_quarantined, 1);
+        assert_eq!(stats.messages_processed, 3);
+        assert_eq!(stats.messages_successful, 2);
+        assert_eq!(stats.messages_failed, 1);
+    }
+
+    #[test]
+    fn test_process_with_validation_accept_all_continues() {
+        let config = PipelineConfig {
+            acceptance_policy: AcceptancePolicy::AcceptAll,
+            ..PipelineConfig::default()
+        };
+        let mut pipeline = Pipeline::new(config);
+        pipeline.start();
+
+        let validator = FailNthValidator::new(2);
+        let file = create_test_file(&valid_multi_message_file(3));
+
+        let result = pipeline
+            .process_with_validation(file.path(), &validator)
+            .expect("accept-all should continue");
+
+        assert!(result.success);
+        assert_eq!(result.message_count, 3);
+        assert_eq!(result.success_count, 2);
+        assert_eq!(result.failure_count, 1);
+        assert!(!result.quarantined);
+        assert!(pipeline.quarantine().is_empty());
+    }
+
+    #[test]
+    fn test_streaming_mode_processes_messages() {
+        let config = PipelineConfig {
+            streaming: true,
+            batch_config: BatchConfig {
+                max_size: 2,
+                ..BatchConfig::default()
+            },
+            ..PipelineConfig::default()
+        };
+        let mut pipeline = Pipeline::new(config);
+        pipeline.start();
+
+        let file = create_test_file(&valid_multi_message_file(4));
+        let result = pipeline.process_file(file.path()).expect("stream process");
+
+        assert!(result.success);
+        assert_eq!(result.message_count, 4);
+        assert_eq!(result.success_count, 4);
+        assert_eq!(pipeline.stats().messages_processed, 4);
+    }
+
+    #[test]
+    fn test_process_with_mapping_invokes_mapper_per_message() {
         let mut pipeline = Pipeline::with_defaults();
         pipeline.start();
 
-        let file = create_test_file("Test");
-        pipeline.process_file(file.path()).unwrap();
+        let mapper = CountingMapper::new();
+        let file = create_test_file(&valid_multi_message_file(2));
 
+        let result = pipeline
+            .process_with_mapping(file.path(), &mapper)
+            .expect("process with mapping");
+
+        assert!(result.success);
+        assert_eq!(result.message_count, 2);
+        assert_eq!(mapper.call_count(), 2);
+    }
+
+    #[test]
+    fn test_process_batch_applies_retries_and_max_size() {
+        let config = PipelineConfig {
+            acceptance_policy: AcceptancePolicy::AcceptAll,
+            batch_config: BatchConfig {
+                max_size: 1,
+                max_retries: 1,
+                ..BatchConfig::default()
+            },
+            ..PipelineConfig::default()
+        };
+        let mut pipeline = Pipeline::new(config);
+        pipeline.start();
+
+        let bad_file = create_test_file("");
+        let good_file = create_test_file(&valid_multi_message_file(1));
+
+        let paths = vec![bad_file.path(), good_file.path()];
+        let result = pipeline.process_batch(&paths).expect("batch processing");
+
+        assert_eq!(result.total_files, 2);
+        assert_eq!(result.file_results.len(), 2);
+        assert_eq!(result.successful_files, 1);
+        assert_eq!(result.failed_files, 1);
+        assert!(result.batch_success);
+
+        // bad file retried once (2 attempts) + good file once = 3 total file attempts
+        assert_eq!(pipeline.stats().files_processed, 3);
+    }
+
+    #[test]
+    fn test_process_batch_fail_all_stops_early() {
+        let config = PipelineConfig {
+            acceptance_policy: AcceptancePolicy::FailAll,
+            strictness: StrictnessLevel::Strict,
+            batch_config: BatchConfig {
+                max_retries: 0,
+                ..BatchConfig::default()
+            },
+            ..PipelineConfig::default()
+        };
+        let mut pipeline = Pipeline::new(config);
+        pipeline.start();
+
+        let bad_file = create_test_file(&partial_message_file());
+        let good_file = create_test_file(&valid_multi_message_file(1));
+
+        let paths = vec![bad_file.path(), good_file.path()];
+        let result = pipeline.process_batch(&paths).expect("batch result");
+
+        assert_eq!(result.total_files, 2);
+        assert_eq!(result.file_results.len(), 1);
+        assert_eq!(result.failed_files, 1);
+        assert!(!result.batch_success);
         assert_eq!(pipeline.stats().files_processed, 1);
-
-        pipeline.reset_stats();
-
-        assert_eq!(pipeline.stats().files_processed, 0);
     }
 
     #[test]
-    fn test_pipeline_start_stop() {
+    fn test_metrics_include_throughput() {
         let mut pipeline = Pipeline::with_defaults();
-
-        assert!(!pipeline.is_running());
-
         pipeline.start();
-        assert!(pipeline.is_running());
 
-        pipeline.stop();
-        assert!(!pipeline.is_running());
+        let file = create_test_file(&valid_multi_message_file(1));
+        let _ = pipeline.process_file(file.path()).expect("process file");
+
+        let metrics = pipeline.metrics();
+        assert!(metrics.files_per_second >= 0.0);
+        assert!(metrics.messages_per_second >= 0.0);
+        assert!(metrics.throughput_mbps >= 0.0);
     }
 
     #[test]
-    fn test_output_formats() {
-        let formats = vec![
-            OutputFormat::Edifact,
-            OutputFormat::Json,
-            OutputFormat::Csv,
-            OutputFormat::Xml,
-        ];
+    fn test_file_not_found_returns_error() {
+        let mut pipeline = Pipeline::with_defaults();
+        pipeline.start();
 
-        for format in formats {
-            let config = PipelineConfig {
-                output_format: format,
-                ..Default::default()
-            };
-            let _pipeline = Pipeline::new(config);
-        }
+        let result = pipeline.process_file(PathBuf::from("/path/does/not/exist.edi"));
+        assert!(result.is_err());
     }
 }

@@ -2341,10 +2341,12 @@ mod tests {
 
         let result = parse_unb(&segment);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("at least 5 elements"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("at least 5 elements")
+        );
     }
 
     #[test]
@@ -2963,9 +2965,11 @@ mod tests {
             position: Position::default(),
         };
 
-        assert!(validator
-            .check_segment_count(&message, &unt_segment)
-            .is_ok());
+        assert!(
+            validator
+                .check_segment_count(&message, &unt_segment)
+                .is_ok()
+        );
     }
 
     #[test]

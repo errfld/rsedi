@@ -1,4 +1,6 @@
 //! Node types for the Intermediate Representation
+#![allow(clippy::must_use_candidate)] // Accessors and search helpers follow existing API style.
+#![allow(clippy::doc_markdown)] // `DateTime`/ISO token style appears throughout existing docs.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -77,7 +79,7 @@ pub enum Value {
     /// Time value
     Time(String), // ISO 8601 format
 
-    /// DateTime value
+    /// `DateTime` value
     DateTime(String), // ISO 8601 format
 
     /// Raw bytes
@@ -131,11 +133,13 @@ impl Node {
     }
 
     /// Find a child by name
+    #[must_use]
     pub fn find_child(&self, name: &str) -> Option<&Node> {
         self.children.iter().find(|c| c.name == name)
     }
 
     /// Find all children by name
+    #[must_use]
     pub fn find_children(&self, name: &str) -> Vec<&Node> {
         self.children.iter().filter(|c| c.name == name).collect()
     }
@@ -143,6 +147,7 @@ impl Node {
 
 impl Value {
     /// Convert value to string
+    #[must_use]
     pub fn as_string(&self) -> Option<String> {
         match self {
             Value::String(s) => Some(s.clone()),
@@ -152,12 +157,12 @@ impl Value {
             Value::Date(d) => Some(d.clone()),
             Value::Time(t) => Some(t.clone()),
             Value::DateTime(dt) => Some(dt.clone()),
-            Value::Binary(_) => None,
-            Value::Null => None,
+            Value::Binary(_) | Value::Null => None,
         }
     }
 
     /// Check if value is null
+    #[must_use]
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
@@ -334,13 +339,13 @@ mod tests {
     #[test]
     fn test_value_is_null() {
         assert!(Value::Null.is_null());
-        assert!(!Value::String("".to_string()).is_null());
+        assert!(!Value::String(String::new()).is_null());
         assert!(!Value::Integer(0).is_null());
         assert!(!Value::Decimal(0.0).is_null());
         assert!(!Value::Boolean(false).is_null());
-        assert!(!Value::Date("".to_string()).is_null());
-        assert!(!Value::Time("".to_string()).is_null());
-        assert!(!Value::DateTime("".to_string()).is_null());
+        assert!(!Value::Date(String::new()).is_null());
+        assert!(!Value::Time(String::new()).is_null());
+        assert!(!Value::DateTime(String::new()).is_null());
         assert!(!Value::Binary(vec![]).is_null());
     }
 

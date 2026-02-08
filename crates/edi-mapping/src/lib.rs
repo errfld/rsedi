@@ -1,3 +1,9 @@
+#![deny(warnings)]
+#![deny(rust_2018_idioms)]
+#![deny(unsafe_op_in_unsafe_fn)]
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+
 //! # edi-mapping
 //!
 //! DSL parser/runtime, transforms, and extension API for EDI mappings.
@@ -6,9 +12,10 @@
 //! different EDI formats and custom schemas.
 
 pub mod dsl;
+pub mod extensions;
+mod numeric;
 pub mod runtime;
 pub mod transforms;
-pub mod extensions;
 
 pub use dsl::MappingDsl;
 pub use runtime::MappingRuntime;
@@ -20,13 +27,13 @@ use thiserror::Error;
 pub enum Error {
     #[error("Mapping error: {0}")]
     Mapping(String),
-    
+
     #[error("DSL parse error: {0}")]
     Parse(String),
-    
+
     #[error("Runtime error: {0}")]
     Runtime(String),
-    
+
     #[error("Transform error: {0}")]
     Transform(String),
 }

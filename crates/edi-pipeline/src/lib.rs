@@ -1,3 +1,9 @@
+#![deny(warnings)]
+#![deny(rust_2018_idioms)]
+#![deny(unsafe_op_in_unsafe_fn)]
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+
 //! # edi-pipeline
 //!
 //! Streaming orchestration, batching, and partial acceptance policies.
@@ -5,20 +11,26 @@
 //! This crate provides the pipeline infrastructure for processing
 //! EDI files with configurable error handling and streaming support.
 
-pub mod pipeline;
 pub mod batch;
-pub mod streaming;
-pub mod quarantine;
+mod numeric;
+pub mod pipeline;
 pub mod policies;
+pub mod quarantine;
+pub mod streaming;
 
+pub use batch::{Batch, BatchConfig, BatchItem, BatchResult, ItemStatus};
 pub use pipeline::{
     ErrorSeverity, FileResult, Mapper, OutputFormat, Pipeline, PipelineBatchResult, PipelineConfig,
     PipelineMetrics, PipelineStats, ValidationError, Validator,
 };
 pub use policies::{AcceptancePolicy, StrictnessLevel};
-pub use batch::{Batch, BatchConfig, BatchItem, BatchResult, ItemStatus};
-pub use streaming::{Checkpoint, ProcessResult, StreamConfig, StreamMessage, StreamProcessor, StreamStats};
-pub use quarantine::{ErrorCategory, ErrorContext, QuarantineConfig, QuarantineReason, QuarantineStats, QuarantineStore, QuarantinedMessage};
+pub use quarantine::{
+    ErrorCategory, ErrorContext, QuarantineConfig, QuarantineReason, QuarantineStats,
+    QuarantineStore, QuarantinedMessage,
+};
+pub use streaming::{
+    Checkpoint, ProcessResult, StreamConfig, StreamMessage, StreamProcessor, StreamStats,
+};
 
 use thiserror::Error;
 
@@ -27,19 +39,19 @@ use thiserror::Error;
 pub enum Error {
     #[error("Pipeline error: {0}")]
     Pipeline(String),
-    
+
     #[error("Batch error: {0}")]
     Batch(String),
-    
+
     #[error("Streaming error: {0}")]
     Streaming(String),
-    
+
     #[error("Quarantine error: {0}")]
     Quarantine(String),
-    
+
     #[error("Policy error: {0}")]
     Policy(String),
-    
+
     #[error("IO error: {0}")]
     Io(String),
 }

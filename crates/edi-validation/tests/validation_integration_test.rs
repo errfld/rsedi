@@ -4,13 +4,13 @@
 
 use edi_ir::{Document, Node, NodeType, Value};
 use edi_validation::{
-    codelist::{validate_code, CodeList, CodeListRegistry},
+    codelist::{CodeList, CodeListRegistry, validate_code},
     engine::{StrictnessLevel, ValidationConfig, ValidationEngine},
     reporter::{Severity, ValidationIssue, ValidationReporter},
     rules::{
-        validate_composite, validate_conditional, validate_data_type, validate_length,
-        validate_pattern, validate_required, validate_segment_order, ConditionalRule, Constraint,
-        DataType, SegmentOrderRule,
+        ConditionalRule, Constraint, DataType, SegmentOrderRule, validate_composite,
+        validate_conditional, validate_data_type, validate_length, validate_pattern,
+        validate_required, validate_segment_order,
     },
 };
 

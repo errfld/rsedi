@@ -1,4 +1,6 @@
 //! Metadata for tracking source positions and validation state
+#![allow(clippy::must_use_candidate)] // Constructor helpers are clear at call sites without #[must_use].
+#![allow(clippy::return_self_not_must_use)] // Fluent setters are designed for chaining.
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +79,7 @@ pub enum Severity {
 
 impl Position {
     /// Create a new position
+    #[must_use]
     pub fn new(line: usize, column: usize, offset: usize, length: usize) -> Self {
         Self {
             line,
@@ -89,6 +92,7 @@ impl Position {
 
 impl SourceInfo {
     /// Create new source info
+    #[must_use]
     pub fn new(source: impl Into<String>, position: Position) -> Self {
         Self {
             source: source.into(),
@@ -98,6 +102,7 @@ impl SourceInfo {
     }
 
     /// Add context
+    #[must_use]
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
@@ -106,6 +111,7 @@ impl SourceInfo {
 
 impl ValidationMessage {
     /// Create a new validation message
+    #[must_use]
     pub fn new(
         code: impl Into<String>,
         message: impl Into<String>,
@@ -123,6 +129,7 @@ impl ValidationMessage {
     }
 
     /// Add expected/actual values
+    #[must_use]
     pub fn with_values(mut self, expected: impl Into<String>, actual: impl Into<String>) -> Self {
         self.expected = Some(expected.into());
         self.actual = Some(actual.into());

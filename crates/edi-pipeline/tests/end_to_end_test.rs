@@ -61,9 +61,9 @@ fn test_end_to_end_batch_processing() {
     let mut pipeline = Pipeline::new(config);
     pipeline.start();
 
-    // Create multiple test files
+    // Create multiple valid test files
     let files: Vec<_> = (0..5)
-        .map(|i| create_edi_file(&format!("{}Message {}", valid_edi_message(), i)))
+        .map(|_| create_edi_file(&valid_edi_message()))
         .collect();
 
     let paths: Vec<_> = files.iter().map(|f| f.path()).collect();
@@ -199,7 +199,7 @@ fn test_batch_integration() {
         ..Default::default()
     };
 
-    let mut batch = Batch::from_items(items, config).unwrap();
+    let mut batch = Batch::from_items(items, &config).unwrap();
 
     // Mark some as success, some as failed
     for i in 0..10 {
