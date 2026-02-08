@@ -172,7 +172,7 @@ impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)?;
         if let (Some(line), Some(col)) = (self.line, self.column) {
-            write!(f, " at line {}, column {}", line, col)?;
+            write!(f, " at line {line}, column {col}")?;
         }
         Ok(())
     }
@@ -182,23 +182,32 @@ impl std::error::Error for ParseError {}
 
 impl MappingDsl {
     /// Create a new mapping DSL instance
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 
     /// Parse a mapping from YAML DSL
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when YAML parsing fails.
     pub fn parse(yaml: &str) -> Result<Mapping, ParseError> {
         serde_yaml::from_str(yaml).map_err(|e| ParseError {
-            message: format!("Failed to parse DSL: {}", e),
+            message: format!("Failed to parse DSL: {e}"),
             line: e.location().map(|l| l.line()),
             column: e.location().map(|l| l.column()),
         })
     }
 
     /// Parse a mapping from a file
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read or parsed.
     pub fn parse_file(path: &std::path::Path) -> Result<Mapping, ParseError> {
         let content = std::fs::read_to_string(path).map_err(|e| ParseError {
-            message: format!("Failed to read file: {}", e),
+            message: format!("Failed to read file: {e}"),
             line: None,
             column: None,
         })?;
@@ -206,9 +215,13 @@ impl MappingDsl {
     }
 
     /// Serialize a mapping to YAML
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when serialization fails.
     pub fn to_yaml(mapping: &Mapping) -> Result<String, ParseError> {
         serde_yaml::to_string(mapping).map_err(|e| ParseError {
-            message: format!("Failed to serialize: {}", e),
+            message: format!("Failed to serialize: {e}"),
             line: None,
             column: None,
         })
@@ -227,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_parse_simple_mapping() {
-        let dsl = r#"
+        let dsl = r"
 name: simple_orders_mapping
 source_type: EANCOM_ORDERS
 target_type: CSV_ORDERS
@@ -238,7 +251,7 @@ rules:
   - type: field
     source: /BGM/DocumentNumber
     target: order_number
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         assert_eq!(mapping.name, "simple_orders_mapping");
@@ -275,7 +288,7 @@ rules:
 
     #[test]
     fn test_parse_foreach() {
-        let dsl = r#"
+        let dsl = r"
 name: orders_with_items
 source_type: EANCOM_ORDERS
 target_type: CSV_ITEMS
@@ -290,7 +303,7 @@ rules:
       - type: field
         source: ItemNumber
         target: sku
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         assert_eq!(mapping.rules.len(), 1);
@@ -400,7 +413,7 @@ lookups:
 
     #[test]
     fn test_parse_nested_mappings() {
-        let dsl = r#"
+        let dsl = r"
 name: deeply_nested_mapping
 source_type: EANCOM_ORDERS
 target_type: CSV_ORDERS
@@ -425,7 +438,7 @@ rules:
               - type: field
                 source: MessageType
                 target: type
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         assert_eq!(mapping.rules.len(), 1);
@@ -453,7 +466,7 @@ rules:
     #[test]
     fn test_dsl_error_handling() {
         // Invalid YAML syntax
-        let invalid_yaml = r#"
+        let invalid_yaml = r"
 name: broken_mapping
 source_type: EANCOM_ORDERS
 target_type: CSV_ORDERS
@@ -462,7 +475,7 @@ rules:
     source: /ORDER/HEADER/ORDER_NUMBER
     target: order_number
   - invalid_yaml_here: [
-"#;
+";
 
         let result = MappingDsl::parse(invalid_yaml);
         assert!(result.is_err());
@@ -474,11 +487,11 @@ rules:
     #[test]
     fn test_dsl_missing_required_field() {
         // Missing 'name' field
-        let incomplete = r#"
+        let incomplete = r"
 source_type: EANCOM_ORDERS
 target_type: CSV_ORDERS
 rules: []
-"#;
+";
 
         let result = MappingDsl::parse(incomplete);
         assert!(result.is_err());
@@ -856,12 +869,12 @@ rules:
 
     #[test]
     fn test_parse_empty_rules() {
-        let dsl = r#"
+        let dsl = r"
 name: empty_rules_test
 source_type: EANCOM_ORDERS
 target_type: CSV_ORDERS
 rules: []
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         assert!(mapping.rules.is_empty());
@@ -899,7 +912,7 @@ lookups:
 
     #[test]
     fn test_parse_nested_foreach() {
-        let dsl = r#"
+        let dsl = r"
 name: nested_foreach_test
 source_type: EANCOM_ORDERS
 target_type: CSV_ORDERS
@@ -918,7 +931,7 @@ rules:
           - type: field
             source: ItemNumber
             target: sku
-"#;
+";
 
         let mapping = MappingDsl::parse(dsl).unwrap();
         match &mapping.rules[0] {

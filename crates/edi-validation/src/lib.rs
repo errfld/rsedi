@@ -3,7 +3,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
-#![allow(clippy::pedantic)] // Incrementally adopt pedantic lints without blocking existing code.
 
 //! # edi-validation
 //!
@@ -68,12 +67,20 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Convenience function to validate a document with default settings
+///
+/// # Errors
+///
+/// Returns an error when validation execution fails.
 pub fn validate(doc: &edi_ir::Document) -> Result<ValidationResult> {
     let engine = ValidationEngine::new();
     engine.validate(doc)
 }
 
 /// Convenience function to validate a document against a schema
+///
+/// # Errors
+///
+/// Returns an error when schema-based validation execution fails.
 pub fn validate_with_schema(
     doc: &edi_ir::Document,
     schema: &edi_schema::Schema,

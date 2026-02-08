@@ -5,6 +5,10 @@
 use edi_ir::Value;
 
 /// Transform a value using the specified operation
+///
+/// # Errors
+///
+/// Returns an error if the selected transform cannot be applied to the input.
 pub fn apply_transform(value: &Value, transform: &crate::dsl::Transform) -> crate::Result<Value> {
     match transform {
         crate::dsl::Transform::Uppercase => transform_uppercase(value),
@@ -32,6 +36,10 @@ pub fn apply_transform(value: &Value, transform: &crate::dsl::Transform) -> crat
 }
 
 /// Convert string to uppercase
+///
+/// # Errors
+///
+/// Returns an error if the value cannot be represented as a string.
 pub fn transform_uppercase(value: &Value) -> crate::Result<Value> {
     match value {
         Value::String(s) => Ok(Value::String(s.to_uppercase())),
@@ -46,6 +54,10 @@ pub fn transform_uppercase(value: &Value) -> crate::Result<Value> {
 }
 
 /// Convert string to lowercase
+///
+/// # Errors
+///
+/// Returns an error if the value cannot be represented as a string.
 pub fn transform_lowercase(value: &Value) -> crate::Result<Value> {
     match value {
         Value::String(s) => Ok(Value::String(s.to_lowercase())),
@@ -60,6 +72,10 @@ pub fn transform_lowercase(value: &Value) -> crate::Result<Value> {
 }
 
 /// Trim whitespace from string
+///
+/// # Errors
+///
+/// Returns an error if the value cannot be represented as a string.
 pub fn transform_trim(value: &Value) -> crate::Result<Value> {
     match value {
         Value::String(s) => Ok(Value::String(s.trim().to_string())),
@@ -72,22 +88,23 @@ pub fn transform_trim(value: &Value) -> crate::Result<Value> {
 }
 
 /// Format date from one format to another
+///
+/// # Errors
+///
+/// Returns an error when date parsing or formatting fails.
 pub fn transform_date_format(
     value: &Value,
     from_format: &str,
     to_format: &str,
 ) -> crate::Result<Value> {
     let input = match value {
-        Value::String(s) => s.as_str(),
-        Value::Date(s) => s.as_str(),
+        Value::String(s) | Value::Date(s) => s.as_str(),
         Value::Null => return Ok(Value::Null),
         _ => {
-            return value
-                .as_string()
-                .map(|s| transform_date_format(&Value::String(s), from_format, to_format))
-                .unwrap_or(Err(crate::Error::Transform(
-                    "Cannot format date".to_string(),
-                )));
+            return value.as_string().map_or(
+                Err(crate::Error::Transform("Cannot format date".to_string())),
+                |s| transform_date_format(&Value::String(s), from_format, to_format),
+            );
         }
     };
 
@@ -144,8 +161,7 @@ fn parse_date(input: &str, format: &str) -> crate::Result<(i32, u32, u32)> {
             Ok((year, month, day))
         }
         _ => Err(crate::Error::Transform(format!(
-            "Unsupported date format: {}",
-            format
+            "Unsupported date format: {format}"
         ))),
     }
 }
@@ -154,73 +170,97 @@ fn parse_date(input: &str, format: &str) -> crate::Result<(i32, u32, u32)> {
 fn format_date(date: &(i32, u32, u32), format: &str) -> crate::Result<String> {
     let (year, month, day) = date;
     match format {
-        "YYYYMMDD" => Ok(format!("{:04}{:02}{:02}", year, month, day)),
-        "YYYY-MM-DD" => Ok(format!("{:04}-{:02}-{:02}", year, month, day)),
-        "DDMMYYYY" => Ok(format!("{:02}{:02}{:04}", day, month, year)),
-        "ISO8601" => Ok(format!("{:04}-{:02}-{:02}", year, month, day)),
+        "YYYYMMDD" => Ok(format!("{year:04}{month:02}{day:02}")),
+        "YYYY-MM-DD" | "ISO8601" => Ok(format!("{year:04}-{month:02}-{day:02}")),
+        "DDMMYYYY" => Ok(format!("{day:02}{month:02}{year:04}")),
         _ => Err(crate::Error::Transform(format!(
-            "Unsupported output date format: {}",
-            format
+            "Unsupported output date format: {format}"
         ))),
     }
 }
 
+fn value_to_f64(value: &Value) -> crate::Result<f64> {
+    match value {
+        Value::Integer(i) => i
+            .to_string()
+            .parse::<f64>()
+            .map_err(|_| crate::Error::Transform("Cannot parse number".to_string())),
+        Value::Decimal(d) => Ok(*d),
+        Value::String(s) => s
+            .parse::<f64>()
+            .map_err(|_| crate::Error::Transform("Cannot parse number".to_string())),
+        _ => Err(crate::Error::Transform("Cannot format number".to_string())),
+    }
+}
+
 /// Format number with specified decimals and thousands separator
+///
+/// # Errors
+///
+/// Returns an error if the value cannot be parsed as a number.
 pub fn transform_number_format(
     value: &Value,
     decimals: u32,
     thousands_sep: Option<&str>,
 ) -> crate::Result<Value> {
     let num = match value {
-        Value::Integer(i) => *i as f64,
-        Value::Decimal(d) => *d,
-        Value::String(s) => s
-            .parse::<f64>()
-            .map_err(|_| crate::Error::Transform("Cannot parse number".to_string()))?,
         Value::Null => return Ok(Value::Null),
-        _ => return Err(crate::Error::Transform("Cannot format number".to_string())),
+        _ => value_to_f64(value)?,
     };
-
-    let multiplier = 10f64.powi(decimals as i32);
-    let rounded = (num * multiplier).round() / multiplier;
-
+    let precision = usize::try_from(decimals)
+        .map_err(|_| crate::Error::Transform("Unsupported decimal precision".to_string()))?;
+    let mut rounded = format!("{num:.precision$}");
     let formatted = if let Some(sep) = thousands_sep {
-        let int_part = rounded.trunc() as i64;
-        let frac_part = ((rounded.fract().abs() * multiplier).round() as i64)
-            .to_string()
-            .trim_end_matches('0')
-            .to_string();
-
-        let int_str = format_with_thousands_sep(int_part, sep);
-
-        if decimals > 0 && !frac_part.is_empty() {
-            format!("{}.{}", int_str, frac_part)
-        } else {
-            int_str
+        if let Some((int_part, frac_part)) = rounded.split_once('.') {
+            let trimmed_frac = frac_part.trim_end_matches('0');
+            rounded = if trimmed_frac.is_empty() {
+                int_part.to_string()
+            } else {
+                format!("{int_part}.{trimmed_frac}")
+            };
         }
+        format_with_thousands_sep(&rounded, sep)
     } else {
-        format!("{:.1$}", rounded, decimals as usize)
+        rounded
     };
 
     Ok(Value::String(formatted))
 }
 
-/// Format integer with thousands separator
-fn format_with_thousands_sep(n: i64, sep: &str) -> String {
-    let s = n.to_string();
-    let mut result = String::new();
+/// Format numeric string with thousands separator.
+fn format_with_thousands_sep(number: &str, sep: &str) -> String {
+    let (sign, unsigned) = if let Some(stripped) = number.strip_prefix('-') {
+        ("-", stripped)
+    } else {
+        ("", number)
+    };
+    let (integer_part, fractional_part) =
+        if let Some((int_part, frac_part)) = unsigned.split_once('.') {
+            (int_part, Some(frac_part))
+        } else {
+            (unsigned, None)
+        };
 
-    for (count, c) in s.chars().rev().enumerate() {
-        if count > 0 && count % 3 == 0 && c != '-' {
-            result.push_str(sep);
+    let mut grouped_reversed = String::new();
+    for (index, ch) in integer_part.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            grouped_reversed.push_str(sep);
         }
-        result.push(c);
+        grouped_reversed.push(ch);
     }
+    let grouped_integer: String = grouped_reversed.chars().rev().collect();
 
-    result.chars().rev().collect()
+    match fractional_part {
+        Some(frac) if !frac.is_empty() => format!("{sign}{grouped_integer}.{frac}"),
+        _ => format!("{sign}{grouped_integer}"),
+    }
 }
 
 /// Concatenate values
+///
+/// # Errors
+///
+/// Returns an error if future context-aware concatenation fails.
 pub fn transform_concatenate(
     _value: &Value,
     concat_values: &[crate::dsl::ConcatValue],
@@ -234,7 +274,7 @@ pub fn transform_concatenate(
         .iter()
         .map(|cv| match cv {
             crate::dsl::ConcatValue::Literal { value } => value.clone(),
-            crate::dsl::ConcatValue::Field { path } => format!("[{}]", path),
+            crate::dsl::ConcatValue::Field { path } => format!("[{path}]"),
         })
         .collect();
 
@@ -242,17 +282,19 @@ pub fn transform_concatenate(
 }
 
 /// Split string by delimiter and get indexed part
+///
+/// # Errors
+///
+/// Returns an error if the value cannot be represented as a string or index is out of bounds.
 pub fn transform_split(value: &Value, delimiter: &str, index: usize) -> crate::Result<Value> {
     let input = match value {
         Value::String(s) => s.as_str(),
         Value::Null => return Ok(Value::Null),
         _ => {
-            return value
-                .as_string()
-                .map(|s| transform_split(&Value::String(s), delimiter, index))
-                .unwrap_or(Err(crate::Error::Transform(
-                    "Cannot split value".to_string(),
-                )));
+            return value.as_string().map_or(
+                Err(crate::Error::Transform("Cannot split value".to_string())),
+                |s| transform_split(&Value::String(s), delimiter, index),
+            );
         }
     };
 
@@ -270,6 +312,10 @@ pub fn transform_split(value: &Value, delimiter: &str, index: usize) -> crate::R
 }
 
 /// Return default value if input is null or empty
+///
+/// # Errors
+///
+/// This function currently does not return an error.
 pub fn transform_default(value: &Value, default: &str) -> crate::Result<Value> {
     match value {
         Value::Null => Ok(Value::String(default.to_string())),
@@ -279,6 +325,10 @@ pub fn transform_default(value: &Value, default: &str) -> crate::Result<Value> {
 }
 
 /// Apply conditional transform
+///
+/// # Errors
+///
+/// Returns an error if condition evaluation or nested transforms fail.
 pub fn transform_conditional(
     value: &Value,
     when: &crate::dsl::Condition,
@@ -360,6 +410,10 @@ fn evaluate_condition_simple(
 }
 
 /// Apply a chain of transforms
+///
+/// # Errors
+///
+/// Returns an error if any transform in the chain fails.
 pub fn transform_chain(
     value: &Value,
     transforms: &[crate::dsl::Transform],
@@ -418,7 +472,7 @@ mod tests {
     fn test_transform_trim_empty() {
         let value = Value::String("   ".to_string());
         let result = transform_trim(&value).unwrap();
-        assert_eq!(result, Value::String("".to_string()));
+        assert_eq!(result, Value::String(String::new()));
     }
 
     #[test]
@@ -480,7 +534,7 @@ mod tests {
     // Number format tests
     #[test]
     fn test_transform_number_format_integer() {
-        let value = Value::Integer(1234567);
+        let value = Value::Integer(1_234_567);
         let result = transform_number_format(&value, 0, None).unwrap();
         assert_eq!(result, Value::String("1234567".to_string()));
     }
@@ -494,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_transform_number_format_with_thousands_sep() {
-        let value = Value::Integer(1234567);
+        let value = Value::Integer(1_234_567);
         let result = transform_number_format(&value, 0, Some(",")).unwrap();
         assert_eq!(result, Value::String("1,234,567".to_string()));
     }
@@ -555,7 +609,7 @@ mod tests {
         let value = Value::Null;
         let concat_values: Vec<ConcatValue> = vec![];
         let result = transform_concatenate(&value, &concat_values, Some(",")).unwrap();
-        assert_eq!(result, Value::String("".to_string()));
+        assert_eq!(result, Value::String(String::new()));
     }
 
     #[test]
@@ -629,7 +683,7 @@ mod tests {
     fn test_transform_split_empty_parts() {
         let value = Value::String("a,,c".to_string());
         let result = transform_split(&value, ",", 1).unwrap();
-        assert_eq!(result, Value::String("".to_string()));
+        assert_eq!(result, Value::String(String::new()));
     }
 
     // Default value tests
@@ -642,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_transform_default_empty_string() {
-        let value = Value::String("".to_string());
+        let value = Value::String(String::new());
         let result = transform_default(&value, "DEFAULT").unwrap();
         assert_eq!(result, Value::String("DEFAULT".to_string()));
     }

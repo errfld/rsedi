@@ -35,6 +35,7 @@ pub trait Traversal {
 
 impl<'a> Cursor<'a> {
     /// Create a new cursor at the given node
+    #[must_use]
     pub fn new(node: &'a Node) -> Self {
         Self {
             node,
@@ -43,16 +44,22 @@ impl<'a> Cursor<'a> {
     }
 
     /// Get the current node
+    #[must_use]
     pub fn node(&self) -> &Node {
         self.node
     }
 
     /// Get the current path
+    #[must_use]
     pub fn path(&self) -> &[String] {
         &self.path
     }
 
     /// Navigate to a child node by name
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NodeNotFound`] when no child with `name` exists.
     pub fn child(&self, name: &str) -> Result<Cursor<'a>> {
         match self.node.find_child(name) {
             Some(child) => {
@@ -72,11 +79,15 @@ impl<'a> Cursor<'a> {
     }
 
     /// Navigate to a child by index
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NodeNotFound`] when `index` is out of bounds.
     pub fn child_at(&self, index: usize) -> Result<Cursor<'a>> {
         match self.node.children.get(index) {
             Some(child) => {
                 let mut new_path = self.path.clone();
-                new_path.push(format!("[{}]", index));
+                new_path.push(format!("[{index}]"));
                 Ok(Cursor {
                     node: child,
                     path: new_path,
@@ -91,6 +102,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Get all children matching a name
+    #[must_use]
     pub fn children(&self, name: &str) -> Vec<Cursor<'a>> {
         self.node
             .find_children(name)
@@ -98,7 +110,7 @@ impl<'a> Cursor<'a> {
             .enumerate()
             .map(|(idx, child)| {
                 let mut new_path = self.path.clone();
-                new_path.push(format!("{}[{}]", name, idx));
+                new_path.push(format!("{name}[{idx}]"));
                 Cursor {
                     node: child,
                     path: new_path,
@@ -108,6 +120,11 @@ impl<'a> Cursor<'a> {
     }
 
     /// Navigate using a path (e.g., "ORDERS/MSG/ITEM[0]/LIN")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidPath`] for malformed path syntax and
+    /// [`Error::NodeNotFound`] when a referenced node does not exist.
     pub fn navigate(&self, path: &str) -> Result<Cursor<'a>> {
         let mut current_node = self.node;
         let mut current_path = self.path.clone();
@@ -120,12 +137,12 @@ impl<'a> Cursor<'a> {
             // Handle array indexing like "ITEM[0]"
             if let Some(open_bracket) = segment.find('[') {
                 let name = &segment[..open_bracket];
-                let close_bracket = segment.find(']').ok_or_else(|| {
-                    Error::InvalidPath(format!("Unclosed bracket in: {}", segment))
-                })?;
+                let close_bracket = segment
+                    .find(']')
+                    .ok_or_else(|| Error::InvalidPath(format!("Unclosed bracket in: {segment}")))?;
                 let index: usize = segment[open_bracket + 1..close_bracket]
                     .parse()
-                    .map_err(|_| Error::InvalidPath(format!("Invalid index in: {}", segment)))?;
+                    .map_err(|_| Error::InvalidPath(format!("Invalid index in: {segment}")))?;
 
                 // Find children by name
                 let children: Vec<&Node> = current_node
@@ -137,7 +154,7 @@ impl<'a> Cursor<'a> {
                 current_node = children.get(index).ok_or_else(|| {
                     Error::NodeNotFound(format!("{}/{}", current_path.join("/"), segment))
                 })?;
-                current_path.push(format!("{}[{}]", name, index));
+                current_path.push(format!("{name}[{index}]"));
             } else {
                 current_node = current_node.find_child(segment).ok_or_else(|| {
                     Error::NodeNotFound(format!("{}/{}", current_path.join("/"), segment))

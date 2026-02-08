@@ -79,7 +79,7 @@ pub enum Value {
     /// Time value
     Time(String), // ISO 8601 format
 
-    /// DateTime value
+    /// `DateTime` value
     DateTime(String), // ISO 8601 format
 
     /// Raw bytes
@@ -133,11 +133,13 @@ impl Node {
     }
 
     /// Find a child by name
+    #[must_use]
     pub fn find_child(&self, name: &str) -> Option<&Node> {
         self.children.iter().find(|c| c.name == name)
     }
 
     /// Find all children by name
+    #[must_use]
     pub fn find_children(&self, name: &str) -> Vec<&Node> {
         self.children.iter().filter(|c| c.name == name).collect()
     }
@@ -145,6 +147,7 @@ impl Node {
 
 impl Value {
     /// Convert value to string
+    #[must_use]
     pub fn as_string(&self) -> Option<String> {
         match self {
             Value::String(s) => Some(s.clone()),
@@ -159,6 +162,7 @@ impl Value {
     }
 
     /// Check if value is null
+    #[must_use]
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }

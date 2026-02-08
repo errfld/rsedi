@@ -194,6 +194,7 @@ struct StreamWorkItem {
 
 impl Pipeline {
     /// Create a new pipeline with the given configuration.
+    #[must_use]
     pub fn new(config: PipelineConfig) -> Self {
         Self {
             config,
@@ -204,6 +205,7 @@ impl Pipeline {
     }
 
     /// Create a pipeline with default configuration.
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(PipelineConfig::default())
     }
@@ -220,11 +222,17 @@ impl Pipeline {
     }
 
     /// Check if pipeline is running.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.running
     }
 
     /// Process a single file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading, parsing, validation, mapping, or policy
+    /// handling fails.
     pub fn process_file<P: AsRef<Path>>(&mut self, path: P) -> Result<FileResult> {
         self.process_file_internal(path.as_ref(), None, None)
     }
@@ -247,7 +255,7 @@ impl Pipeline {
         let _file_guard = file_span.enter();
 
         if !path.exists() {
-            return Err(Error::Pipeline(format!("File not found: {}", path_str)));
+            return Err(Error::Pipeline(format!("File not found: {path_str}")));
         }
 
         let metadata = std::fs::metadata(path)?;
@@ -313,7 +321,7 @@ impl Pipeline {
                     && summary.failure_count > 0
                 {
                     success = false;
-                    error = summary.file_error.clone();
+                    error.clone_from(&summary.file_error);
                 }
 
                 if success {
@@ -359,7 +367,7 @@ impl Pipeline {
         let parser = EdifactParser::new();
         let parse_outcome = parser
             .parse_with_warnings(content, path)
-            .map_err(|error| Error::Pipeline(format!("Failed to parse {}: {}", path, error)))?;
+            .map_err(|error| Error::Pipeline(format!("Failed to parse {path}: {error}")))?;
 
         if parse_outcome.documents.is_empty() {
             let mut summary = FileSummary {
@@ -383,7 +391,7 @@ impl Pipeline {
             self.process_documents_streaming(
                 processing_config,
                 parse_outcome.documents,
-                warning_counts,
+                &warning_counts,
                 stop_on_failure,
             )?
         } else {
@@ -396,7 +404,7 @@ impl Pipeline {
             process_documents_sequential(
                 processing_config,
                 parse_outcome.documents,
-                warning_counts,
+                &warning_counts,
                 validator,
                 mapper,
                 stop_on_failure,
@@ -426,7 +434,7 @@ impl Pipeline {
             summary.validation_failures += outcome.validation_failures;
 
             if summary.file_error.is_none() {
-                summary.file_error = outcome.error.clone();
+                summary.file_error.clone_from(&outcome.error);
             }
 
             match self.config.acceptance_policy {
@@ -457,7 +465,7 @@ impl Pipeline {
         &self,
         processing_config: MessageProcessingConfig,
         documents: Vec<Document>,
-        warning_counts: Vec<usize>,
+        warning_counts: &[usize],
         stop_on_failure: bool,
     ) -> Result<Vec<MessageOutcome>> {
         let stream_config = StreamConfig {
@@ -544,40 +552,7 @@ impl Pipeline {
             Ok(outcomes)
         };
 
-        match tokio::runtime::Handle::try_current() {
-            Ok(_) => {
-                let handle = std::thread::spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|error| {
-                            Error::Streaming(format!(
-                                "Failed to build streaming runtime: {}",
-                                error
-                            ))
-                        })?;
-                    runtime.block_on(run())
-                });
-
-                handle.join().map_err(|panic_payload| {
-                    let message = panic_payload
-                        .downcast_ref::<&str>()
-                        .map(|value| (*value).to_string())
-                        .or_else(|| panic_payload.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "non-string panic payload".to_string());
-                    Error::Streaming(format!("Streaming worker thread panicked: {message}"))
-                })?
-            }
-            Err(_) => {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| {
-                        Error::Streaming(format!("Failed to build streaming runtime: {}", error))
-                    })?;
-                runtime.block_on(run())
-            }
-        }
+        run_streaming_task(run)
     }
 
     fn processing_config(&self) -> MessageProcessingConfig {
@@ -593,6 +568,11 @@ impl Pipeline {
     ///
     /// This is intended to be used by CLI batch commands and supports retry and
     /// partial-success policies through `BatchConfig`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if batch processing cannot continue under configured
+    /// acceptance policy or underlying I/O/processing fails.
     pub fn process_batch<P: AsRef<Path>>(&mut self, paths: &[P]) -> Result<PipelineBatchResult> {
         let start = Instant::now();
         let mut file_results = Vec::with_capacity(paths.len());
@@ -600,11 +580,11 @@ impl Pipeline {
         let mut stop_processing = false;
 
         while path_index < paths.len() && !stop_processing {
-            let mut batch = Batch::new(self.config.batch_config.clone());
+            let mut batch = Batch::new(&self.config.batch_config);
 
             while path_index < paths.len() && !batch.is_full() {
                 let item_path = paths[path_index].as_ref().to_path_buf();
-                let item_id = format!("file-{}", path_index);
+                let item_id = format!("file-{path_index}");
                 batch.add(item_id, item_path)?;
                 path_index += 1;
             }
@@ -685,9 +665,8 @@ impl Pipeline {
             .count();
 
         let batch_success = match self.config.acceptance_policy {
-            AcceptancePolicy::AcceptAll => true,
             AcceptancePolicy::FailAll => failed_files == 0,
-            AcceptancePolicy::Quarantine => true,
+            AcceptancePolicy::AcceptAll | AcceptancePolicy::Quarantine => true,
         };
 
         Ok(PipelineBatchResult {
@@ -702,6 +681,10 @@ impl Pipeline {
     }
 
     /// Process a file with a validator integration point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing/validation/policy handling fails.
     pub fn process_with_validation<P: AsRef<Path>>(
         &mut self,
         path: P,
@@ -711,6 +694,10 @@ impl Pipeline {
     }
 
     /// Process a file with a mapper integration point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing/mapping/policy handling fails.
     pub fn process_with_mapping<P: AsRef<Path>>(
         &mut self,
         path: P,
@@ -720,11 +707,13 @@ impl Pipeline {
     }
 
     /// Get current statistics.
+    #[must_use]
     pub fn stats(&self) -> &PipelineStats {
         &self.stats
     }
 
     /// Get metrics.
+    #[must_use]
     pub fn metrics(&self) -> PipelineMetrics {
         let elapsed = self
             .stats
@@ -734,30 +723,31 @@ impl Pipeline {
 
         let elapsed_secs = elapsed.as_secs_f64();
         let bytes_per_second = if elapsed_secs > 0.0 {
-            self.stats.bytes_processed as f64 / elapsed_secs
+            usize_to_f64(self.stats.bytes_processed) / elapsed_secs
         } else {
             0.0
         };
 
         PipelineMetrics {
             files_per_second: if elapsed_secs > 0.0 {
-                self.stats.files_processed as f64 / elapsed_secs
+                usize_to_f64(self.stats.files_processed) / elapsed_secs
             } else {
                 0.0
             },
             messages_per_second: if elapsed_secs > 0.0 {
-                self.stats.messages_processed as f64 / elapsed_secs
+                usize_to_f64(self.stats.messages_processed) / elapsed_secs
             } else {
                 0.0
             },
             avg_file_time_ms: if self.stats.files_processed > 0 {
-                self.stats.total_processing_time.as_millis() as f64
-                    / self.stats.files_processed as f64
+                u128_to_f64(self.stats.total_processing_time.as_millis())
+                    / usize_to_f64(self.stats.files_processed)
             } else {
                 0.0
             },
             error_rate: if self.stats.files_processed > 0 {
-                (self.stats.files_failed as f64 / self.stats.files_processed as f64) * 100.0
+                (usize_to_f64(self.stats.files_failed) / usize_to_f64(self.stats.files_processed))
+                    * 100.0
             } else {
                 0.0
             },
@@ -766,6 +756,7 @@ impl Pipeline {
     }
 
     /// Get quarantine store.
+    #[must_use]
     pub fn quarantine(&self) -> &QuarantineStore<Vec<u8>> {
         &self.quarantine
     }
@@ -781,6 +772,7 @@ impl Pipeline {
     }
 
     /// Get configuration.
+    #[must_use]
     pub fn config(&self) -> &PipelineConfig {
         &self.config
     }
@@ -789,6 +781,10 @@ impl Pipeline {
 /// Trait for validation integration.
 pub trait Validator {
     /// Validate content and return validation messages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation execution fails.
     fn validate(&self, content: &str) -> Result<Vec<ValidationError>>;
 }
 
@@ -817,13 +813,17 @@ pub enum ErrorSeverity {
 /// Trait for mapping integration.
 pub trait Mapper {
     /// Apply mapping transformation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when mapping execution fails.
     fn map(&self, content: &str) -> Result<String>;
 }
 
 fn process_documents_sequential(
     config: MessageProcessingConfig,
     documents: Vec<Document>,
-    warning_counts: Vec<usize>,
+    warning_counts: &[usize],
     validator: Option<&dyn Validator>,
     mapper: Option<&dyn Mapper>,
     stop_on_failure: bool,
@@ -860,7 +860,7 @@ fn process_single_message(
             return MessageOutcome {
                 message_id,
                 success: false,
-                error: Some(format!("Failed to serialize document: {}", error)),
+                error: Some(format!("Failed to serialize document: {error}")),
                 validation_failures: 0,
                 quarantine_reason: QuarantineReason::ProcessingError,
                 quarantine_payload: Vec::new(),
@@ -894,16 +894,13 @@ fn process_single_message(
         .count();
 
     if validation_failure_count > 0 {
-        let first_message = validation_errors
-            .iter()
-            .find(|error| should_fail_validation(config.strictness, error.severity))
-            .map(|error| error.message.clone())
-            .unwrap_or_else(|| "Validation failed".to_string());
-
         return MessageOutcome {
             message_id,
             success: false,
-            error: Some(first_message),
+            error: Some(first_validation_failure_message(
+                &validation_errors,
+                config.strictness,
+            )),
             validation_failures: validation_failure_count,
             quarantine_reason: QuarantineReason::ValidationFailed,
             quarantine_payload: canonical_json.into_bytes(),
@@ -913,12 +910,12 @@ fn process_single_message(
     let mapped_payload = if config.enable_mapping {
         if let Some(mapper) = mapper {
             match mapper.map(&canonical_json) {
-                Ok(mapped) => Some(mapped),
+                Ok(mapped_doc) => Some(mapped_doc),
                 Err(error) => {
                     return MessageOutcome {
                         message_id,
                         success: false,
-                        error: Some(format!("Mapping failed: {}", error)),
+                        error: Some(format!("Mapping failed: {error}")),
                         validation_failures: 0,
                         quarantine_reason: QuarantineReason::ProcessingError,
                         quarantine_payload: canonical_json.into_bytes(),
@@ -963,6 +960,19 @@ fn process_single_message(
     }
 }
 
+fn first_validation_failure_message(
+    validation_errors: &[ValidationError],
+    strictness: StrictnessLevel,
+) -> String {
+    validation_errors
+        .iter()
+        .find(|error| should_fail_validation(strictness, error.severity))
+        .map_or_else(
+            || "Validation failed".to_string(),
+            |error| error.message.clone(),
+        )
+}
+
 fn collect_validation_errors(
     config: MessageProcessingConfig,
     warning_count: usize,
@@ -992,10 +1002,7 @@ fn collect_validation_errors(
 
     if warning_count > 0 {
         errors.push(ValidationError {
-            message: format!(
-                "Parser emitted {} warning(s) for this message",
-                warning_count
-            ),
+            message: format!("Parser emitted {warning_count} warning(s) for this message"),
             location: document.metadata.message_refs.first().cloned(),
             severity: ErrorSeverity::Warning,
         });
@@ -1041,6 +1048,49 @@ fn message_id(document: &Document, index: usize) -> String {
         .first()
         .cloned()
         .unwrap_or_else(|| format!("message-{}", index + 1))
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(f64::MAX)
+}
+
+fn u128_to_f64(value: u128) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(f64::MAX)
+}
+
+fn run_streaming_task<F, Fut>(run: F) -> Result<Vec<MessageOutcome>>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Vec<MessageOutcome>>> + Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    Error::Streaming(format!("Failed to build streaming runtime: {error}"))
+                })?;
+            runtime.block_on(run())
+        });
+
+        handle.join().map_err(|panic_payload| {
+            let message = panic_payload
+                .downcast_ref::<&str>()
+                .map(|value| (*value).to_string())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            Error::Streaming(format!("Streaming worker thread panicked: {message}"))
+        })?
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                Error::Streaming(format!("Failed to build streaming runtime: {error}"))
+            })?;
+        runtime.block_on(run())
+    }
 }
 
 fn render_output(
@@ -1099,7 +1149,7 @@ fn collect_rows(node: &Node, rows: &mut Vec<(String, String, String)>) {
 fn escape_csv_field(value: &str) -> String {
     if value.contains(',') || value.contains('"') || value.contains('\n') {
         let escaped = value.replace('"', "\"\"");
-        format!("\"{}\"", escaped)
+        format!("\"{escaped}\"")
     } else {
         value.to_string()
     }
@@ -1201,6 +1251,7 @@ impl Default for Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::io::Write;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1216,13 +1267,14 @@ mod tests {
         let mut edi = String::from("UNA:+.? '\nUNB+UNOA:3+SENDER+RECEIVER+240101:1200+1'\n");
 
         for index in 1..=message_count {
-            edi.push_str(&format!(
-                "UNH+{}+ORDERS:D:96A:UN'\nBGM+220+PO{}+9'\nUNT+3+{}'\n",
-                index, index, index
-            ));
+            writeln!(
+                edi,
+                "UNH+{index}+ORDERS:D:96A:UN'\nBGM+220+PO{index}+9'\nUNT+3+{index}'"
+            )
+            .expect("write to string");
         }
 
-        edi.push_str(&format!("UNZ+{}+1'\n", message_count));
+        writeln!(edi, "UNZ+{message_count}+1'").expect("write to string");
         edi
     }
 
@@ -1261,8 +1313,8 @@ mod tests {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if call == self.fail_on_call {
                 Ok(vec![ValidationError {
-                    message: format!("Validation failed on message {}", call),
-                    location: Some(format!("/MESSAGE[{}]", call)),
+                    message: format!("Validation failed on message {call}"),
+                    location: Some(format!("/MESSAGE[{call}]")),
                     severity: ErrorSeverity::Error,
                 }])
             } else {

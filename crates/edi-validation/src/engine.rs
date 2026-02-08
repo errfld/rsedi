@@ -23,11 +23,13 @@ pub enum StrictnessLevel {
 
 impl StrictnessLevel {
     /// Determine if an error should fail validation based on strictness
+    #[must_use]
     pub fn should_fail(&self, severity: Severity) -> bool {
         matches!(self.effective_severity(severity), Severity::Error)
     }
 
     /// Determine the effective severity based on strictness
+    #[must_use]
     pub fn effective_severity(&self, severity: Severity) -> Severity {
         match self {
             StrictnessLevel::Strict => match severity {
@@ -100,6 +102,7 @@ pub struct ValidationResult {
 
 impl ValidationResult {
     /// Create a new valid result
+    #[must_use]
     pub fn valid() -> Self {
         Self {
             is_valid: true,
@@ -110,11 +113,13 @@ impl ValidationResult {
     }
 
     /// Check if there are any errors
+    #[must_use]
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty() || self.report.has_errors()
     }
 
     /// Check if there are any warnings
+    #[must_use]
     pub fn has_warnings(&self) -> bool {
         !self.warnings.is_empty() || !self.report.warnings().is_empty()
     }
@@ -139,6 +144,7 @@ impl ValidationResult {
     }
 
     /// Get total issue count
+    #[must_use]
     pub fn total_issues(&self) -> usize {
         self.report.count()
     }
@@ -173,6 +179,7 @@ pub struct ValidationContext {
 
 impl ValidationContext {
     /// Create a new root context
+    #[must_use]
     pub fn root() -> Self {
         Self {
             path: String::new(),
@@ -184,6 +191,7 @@ impl ValidationContext {
     }
 
     /// Create a child context with extended path
+    #[must_use]
     pub fn child(&self, name: &str) -> Self {
         let path = if self.path.is_empty() {
             name.to_string()
@@ -200,9 +208,10 @@ impl ValidationContext {
     }
 
     /// Create a context for an indexed child (e.g., LIN[2])
+    #[must_use]
     pub fn indexed_child(&self, name: &str, index: usize) -> Self {
         let path = if self.path.is_empty() {
-            format!("{}[{}]", name, index)
+            format!("{name}[{index}]")
         } else {
             format!("{}/{}[{}]", self.path, name, index)
         };
@@ -216,24 +225,28 @@ impl ValidationContext {
     }
 
     /// With segment position
+    #[must_use]
     pub fn with_segment_pos(mut self, pos: usize) -> Self {
         self.segment_pos = Some(pos);
         self
     }
 
     /// With element position
+    #[must_use]
     pub fn with_element_pos(mut self, pos: usize) -> Self {
         self.element_pos = Some(pos);
         self
     }
 
     /// With component position
+    #[must_use]
     pub fn with_component_pos(mut self, pos: usize) -> Self {
         self.component_pos = Some(pos);
         self
     }
 
     /// With line number
+    #[must_use]
     pub fn with_line(mut self, line: usize) -> Self {
         self.line = Some(line);
         self
@@ -252,6 +265,7 @@ pub struct ValidationEngine {
 
 impl ValidationEngine {
     /// Create a new validation engine
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: ValidationConfig::default(),
@@ -262,6 +276,7 @@ impl ValidationEngine {
     }
 
     /// Create with specific configuration
+    #[must_use]
     pub fn with_config(config: ValidationConfig) -> Self {
         Self {
             config,
@@ -295,6 +310,11 @@ impl ValidationEngine {
     }
 
     /// Validate a complete document against a schema
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation cannot complete due to internal validation
+    /// failures while traversing the document.
     pub fn validate(&self, doc: &Document) -> crate::Result<ValidationResult> {
         let mut result = ValidationResult::valid();
         let context = ValidationContext::root();
@@ -302,13 +322,13 @@ impl ValidationEngine {
         // Validate the root node
         let _ = self.validate_node(&doc.root, &mut result, &context);
         if self.should_stop(&result) {
-            self.apply_strictness(&mut result);
+            Self::apply_strictness(&mut result);
             return Ok(result);
         }
 
         // Collect all segments for rule validation
         let mut segments = Vec::new();
-        self.collect_segments(&doc.root, &mut segments);
+        Self::collect_segments(&doc.root, &mut segments);
 
         // Validate segment order if rules are defined
         if let Some(rules) = self.segment_order_rules.get("") {
@@ -317,7 +337,7 @@ impl ValidationEngine {
                 if let Some(msg) = order_result.message {
                     self.add_error(&mut result, &context, "SEGMENT_ORDER_VIOLATION", msg);
                     if self.should_stop(&result) {
-                        self.apply_strictness(&mut result);
+                        Self::apply_strictness(&mut result);
                         return Ok(result);
                     }
                 }
@@ -332,7 +352,7 @@ impl ValidationEngine {
                     if let Some(msg) = conditional_result.message {
                         self.add_error(&mut result, &context, "CONDITIONAL_RULE_VIOLATION", msg);
                         if self.should_stop(&result) {
-                            self.apply_strictness(&mut result);
+                            Self::apply_strictness(&mut result);
                             return Ok(result);
                         }
                     }
@@ -341,12 +361,16 @@ impl ValidationEngine {
         }
 
         // Apply strictness rules
-        self.apply_strictness(&mut result);
+        Self::apply_strictness(&mut result);
 
         Ok(result)
     }
 
     /// Validate a document against a specific schema
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if schema-based validation fails to execute.
     pub fn validate_with_schema(
         &self,
         doc: &Document,
@@ -359,12 +383,16 @@ impl ValidationEngine {
         self.validate_document_against_schema(doc, schema, &mut result, &context)?;
 
         // Apply strictness rules
-        self.apply_strictness(&mut result);
+        Self::apply_strictness(&mut result);
 
         Ok(result)
     }
 
     /// Validate a single segment against its definition
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validating contained elements fails.
     pub fn validate_segment(
         &self,
         segment: &Node,
@@ -421,7 +449,7 @@ impl ValidationEngine {
         {
             let element_context = context.child(&element_def.id).with_element_pos(idx);
             let element_result =
-                self.validate_element_internal(child, element_def, &element_context)?;
+                self.validate_element_internal(child, element_def, &element_context);
             result.merge(element_result);
             if self.should_stop(&result) {
                 return Ok(result);
@@ -475,13 +503,17 @@ impl ValidationEngine {
     }
 
     /// Validate a single element against its definition
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if element validation fails.
     pub fn validate_element(
         &self,
         element: &Node,
         element_def: &ElementDefinition,
     ) -> crate::Result<ValidationResult> {
         let context = ValidationContext::root().child(&element_def.id);
-        self.validate_element_internal(element, element_def, &context)
+        Ok(self.validate_element_internal(element, element_def, &context))
     }
 
     /// Internal method to validate an element with context
@@ -490,7 +522,7 @@ impl ValidationEngine {
         element: &Node,
         element_def: &ElementDefinition,
         context: &ValidationContext,
-    ) -> crate::Result<ValidationResult> {
+    ) -> ValidationResult {
         let mut result = ValidationResult::valid();
 
         // Check if element has the expected ID
@@ -505,17 +537,15 @@ impl ValidationEngine {
                 ),
             );
             if self.should_stop(&result) {
-                return Ok(result);
+                return result;
             }
         }
 
         // Get the value to validate
-        let value_str = element.value.as_ref().and_then(|v| v.as_string());
+        let value_str = element.value.as_ref().and_then(edi_ir::Value::as_string);
 
         // Check for mandatory element
-        if element_def.is_mandatory
-            && (value_str.is_none() || value_str.as_ref().unwrap().is_empty())
-        {
+        if element_def.is_mandatory && value_str.as_deref().is_none_or(str::is_empty) {
             self.add_error(
                 &mut result,
                 context,
@@ -526,7 +556,7 @@ impl ValidationEngine {
                 ),
             );
             if self.should_stop(&result) {
-                return Ok(result);
+                return result;
             }
         }
 
@@ -544,7 +574,7 @@ impl ValidationEngine {
                     ),
                 );
                 if self.should_stop(&result) {
-                    return Ok(result);
+                    return result;
                 }
             }
             if len > element_def.max_length {
@@ -558,15 +588,15 @@ impl ValidationEngine {
                     ),
                 );
                 if self.should_stop(&result) {
-                    return Ok(result);
+                    return result;
                 }
             }
 
             // Validate data type
-            if let Err(msg) = self.validate_data_type_for_element(value, element_def) {
+            if let Err(msg) = Self::validate_data_type_for_element(value, element_def) {
                 self.add_error(&mut result, context, "DATA_TYPE_VIOLATION", msg);
                 if self.should_stop(&result) {
-                    return Ok(result);
+                    return result;
                 }
             }
 
@@ -581,7 +611,7 @@ impl ValidationEngine {
                         if let Some(msg) = validation_result.error_message() {
                             self.add_error(&mut result, context, "CODELIST_VIOLATION", msg);
                             if self.should_stop(&result) {
-                                return Ok(result);
+                                return result;
                             }
                         }
                     }
@@ -592,13 +622,13 @@ impl ValidationEngine {
         // Validate component children if this is a composite element
         for (idx, child) in element.children.iter().enumerate() {
             let component_context = context.child(&child.name).with_component_pos(idx);
-            self.validate_component(child, &mut result, &component_context)?;
+            self.validate_component(child, &mut result, &component_context);
             if self.should_stop(&result) {
-                return Ok(result);
+                return result;
             }
         }
 
-        Ok(result)
+        result
     }
 
     /// Validate a component element
@@ -607,7 +637,7 @@ impl ValidationEngine {
         component: &Node,
         result: &mut ValidationResult,
         context: &ValidationContext,
-    ) -> crate::Result<()> {
+    ) {
         if component.node_type != NodeType::Component {
             self.add_warning(
                 result,
@@ -616,7 +646,7 @@ impl ValidationEngine {
                 format!("Expected Component, found {:?}", component.node_type),
             );
             if self.should_stop(result) {
-                return Ok(());
+                return;
             }
         }
 
@@ -632,13 +662,9 @@ impl ValidationEngine {
                         component.name
                     ),
                 );
-                if self.should_stop(result) {
-                    return Ok(());
-                }
+                let _ = self.should_stop(result);
             }
         }
-
-        Ok(())
     }
 
     /// Validate document against schema structure
@@ -651,7 +677,7 @@ impl ValidationEngine {
     ) -> crate::Result<()> {
         // Collect all segments from the document
         let mut segments = Vec::new();
-        self.collect_segments(&doc.root, &mut segments);
+        Self::collect_segments(&doc.root, &mut segments);
 
         // Validate segment order if rules are defined
         if let Some(rules) = self.segment_order_rules.get("") {
@@ -770,7 +796,7 @@ impl ValidationEngine {
         }
     }
 
-    fn collect_segments<'a>(&self, node: &'a Node, segments: &mut Vec<&'a Node>) {
+    fn collect_segments<'a>(node: &'a Node, segments: &mut Vec<&'a Node>) {
         if matches!(
             node.node_type,
             NodeType::Segment | NodeType::Interchange | NodeType::Message
@@ -779,7 +805,7 @@ impl ValidationEngine {
         }
 
         for child in &node.children {
-            self.collect_segments(child, segments);
+            Self::collect_segments(child, segments);
         }
     }
 
@@ -849,20 +875,19 @@ impl ValidationEngine {
 
     /// Validate data type for an element
     fn validate_data_type_for_element(
-        &self,
         value: &str,
         element_def: &ElementDefinition,
     ) -> Result<(), String> {
         match element_def.data_type.as_str() {
             "an" | "a" | "n" => {
                 // alphanumeric, alphabetic, numeric strings - basic validation
-                if element_def.data_type == "a" && !value.chars().all(|c| c.is_alphabetic()) {
+                if element_def.data_type == "a" && !value.chars().all(char::is_alphabetic) {
                     return Err(format!(
                         "Element '{}' should be alphabetic only, got '{}'",
                         element_def.id, value
                     ));
                 }
-                if element_def.data_type == "n" && !value.chars().all(|c| c.is_numeric()) {
+                if element_def.data_type == "n" && !value.chars().all(char::is_numeric) {
                     return Err(format!(
                         "Element '{}' should be numeric only, got '{}'",
                         element_def.id, value
@@ -872,7 +897,7 @@ impl ValidationEngine {
             }
             "dt" => {
                 // Date format
-                if value.len() != 8 || !value.chars().all(|c| c.is_numeric()) {
+                if value.len() != 8 || !value.chars().all(char::is_numeric) {
                     return Err(format!(
                         "Element '{}' should be date format (YYYYMMDD), got '{}'",
                         element_def.id, value
@@ -882,8 +907,7 @@ impl ValidationEngine {
             }
             "tm" => {
                 // Time format
-                if !(value.len() == 4 || value.len() == 6) || !value.chars().all(|c| c.is_numeric())
-                {
+                if !(value.len() == 4 || value.len() == 6) || !value.chars().all(char::is_numeric) {
                     return Err(format!(
                         "Element '{}' should be time format (HHMM or HHMMSS), got '{}'",
                         element_def.id, value
@@ -938,17 +962,17 @@ impl ValidationEngine {
     }
 
     /// Apply strictness rules to the final result
-    fn apply_strictness(&self, result: &mut ValidationResult) {
+    fn apply_strictness(result: &mut ValidationResult) {
         result.is_valid = !result.has_errors();
     }
 
-    fn error_count(&self, result: &ValidationResult) -> usize {
+    fn error_count(result: &ValidationResult) -> usize {
         result.errors.len() + result.report.count_by_severity(Severity::Error)
     }
 
     /// Check if validation should stop due to max errors
     fn should_stop(&self, result: &ValidationResult) -> bool {
-        let error_count = self.error_count(result);
+        let error_count = Self::error_count(result);
 
         if !self.config.continue_on_error && error_count > 0 {
             return true;

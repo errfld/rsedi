@@ -46,6 +46,7 @@ pub struct DocumentMetadata {
 
 impl Document {
     /// Create a new document with the given root node
+    #[must_use]
     pub fn new(root: Node) -> Self {
         Self {
             root,
@@ -55,6 +56,7 @@ impl Document {
     }
 
     /// Create a new document with metadata
+    #[must_use]
     pub fn with_metadata(root: Node, metadata: DocumentMetadata) -> Self {
         Self {
             root,
@@ -64,6 +66,7 @@ impl Document {
     }
 
     /// Set the schema reference
+    #[must_use]
     pub fn with_schema(mut self, schema_ref: impl Into<String>) -> Self {
         self.schema_ref = Some(schema_ref.into());
         self

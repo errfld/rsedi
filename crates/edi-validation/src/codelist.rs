@@ -28,7 +28,7 @@ impl CodeList {
 
     /// Create with a set of codes
     pub fn with_codes(name: impl Into<String>, codes: Vec<impl Into<String>>) -> Self {
-        let codes: HashSet<String> = codes.into_iter().map(|c| c.into()).collect();
+        let codes: HashSet<String> = codes.into_iter().map(std::convert::Into::into).collect();
         Self {
             name: name.into(),
             codes,
@@ -38,12 +38,14 @@ impl CodeList {
     }
 
     /// Set case sensitivity
+    #[must_use]
     pub fn case_sensitive(mut self, sensitive: bool) -> Self {
         self.case_sensitive = sensitive;
         self
     }
 
     /// Set description
+    #[must_use]
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self
@@ -60,6 +62,7 @@ impl CodeList {
     }
 
     /// Check if a code is valid
+    #[must_use]
     pub fn is_valid(&self, code: &str) -> bool {
         if self.case_sensitive {
             self.codes.contains(code)
@@ -70,6 +73,7 @@ impl CodeList {
     }
 
     /// Get all codes as a sorted vector
+    #[must_use]
     pub fn all_codes(&self) -> Vec<&String> {
         let mut codes: Vec<_> = self.codes.iter().collect();
         codes.sort();
@@ -77,11 +81,13 @@ impl CodeList {
     }
 
     /// Check if code list is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.codes.is_empty()
     }
 
     /// Get number of codes
+    #[must_use]
     pub fn len(&self) -> usize {
         self.codes.len()
     }
@@ -101,6 +107,7 @@ pub struct CodeListRegistry {
 
 impl CodeListRegistry {
     /// Create a new registry
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -111,15 +118,15 @@ impl CodeListRegistry {
     }
 
     /// Get a code list by name
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&CodeList> {
         self.lists.get(name)
     }
 
     /// Validate a value against a named code list
+    #[must_use]
     pub fn validate(&self, list_name: &str, value: &str) -> bool {
-        self.get(list_name)
-            .map(|list| list.is_valid(value))
-            .unwrap_or(true) // If list doesn't exist, assume valid
+        self.get(list_name).is_none_or(|list| list.is_valid(value)) // If list doesn't exist, assume valid
     }
 
     /// Remove a code list
@@ -128,6 +135,7 @@ impl CodeListRegistry {
     }
 
     /// List all registered code list names
+    #[must_use]
     pub fn list_names(&self) -> Vec<&String> {
         self.lists.keys().collect()
     }
@@ -146,19 +154,20 @@ pub enum CodeListResult {
 
 impl CodeListResult {
     /// Check if result is valid
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         matches!(self, CodeListResult::Valid)
     }
 
     /// Get error message if invalid
+    #[must_use]
     pub fn error_message(&self) -> Option<String> {
         match self {
             CodeListResult::Invalid { code, list_name } => Some(format!(
-                "'{}' is not a valid code in list '{}'",
-                code, list_name
+                "'{code}' is not a valid code in list '{list_name}'"
             )),
             CodeListResult::ListNotFound { list_name } => {
-                Some(format!("Code list '{}' not found", list_name))
+                Some(format!("Code list '{list_name}' not found"))
             }
             CodeListResult::Valid => None,
         }
@@ -166,6 +175,7 @@ impl CodeListResult {
 }
 
 /// Validate a code against a code list
+#[must_use]
 pub fn validate_code(code: &str, list: &CodeList) -> CodeListResult {
     if list.is_valid(code) {
         CodeListResult::Valid
@@ -400,7 +410,7 @@ mod tests {
     fn test_large_codelist() {
         let mut list = CodeList::new("large");
         for i in 0..1000 {
-            list.add(format!("CODE{:04}", i));
+            list.add(format!("CODE{i:04}"));
         }
 
         assert_eq!(list.len(), 1000);
@@ -411,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_default_codelist() {
-        let list: CodeList = Default::default();
+        let list = CodeList::default();
         assert_eq!(list.name, "default");
         assert!(list.is_empty());
         assert!(list.case_sensitive);

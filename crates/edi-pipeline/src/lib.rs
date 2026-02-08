@@ -3,7 +3,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
-#![allow(clippy::pedantic)] // Incrementally adopt pedantic lints without blocking existing code.
 
 //! # edi-pipeline
 //!

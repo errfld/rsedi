@@ -60,6 +60,7 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     /// Create a new checkpoint at the given position
+    #[must_use]
     pub fn new(position: usize, byte_offset: usize) -> Self {
         Self {
             position,
@@ -71,6 +72,7 @@ impl Checkpoint {
     }
 
     /// Create a checkpoint at position 0
+    #[must_use]
     pub fn origin() -> Self {
         Self::new(0, 0)
     }
@@ -158,17 +160,19 @@ pub struct StreamStats {
 
 impl StreamStats {
     /// Create new stats
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get processing rate (messages per second)
+    #[must_use]
     pub fn rate(&self) -> f64 {
         match self.started_at {
             Some(start) => {
                 let elapsed = start.elapsed().as_secs_f64();
                 if elapsed > 0.0 {
-                    (self.succeeded + self.failed) as f64 / elapsed
+                    usize_to_f64(self.succeeded + self.failed) / elapsed
                 } else {
                     0.0
                 }
@@ -178,31 +182,37 @@ impl StreamStats {
     }
 
     /// Get success rate as percentage
+    #[must_use]
     pub fn success_rate(&self) -> f64 {
         let total = self.succeeded + self.failed;
         if total == 0 {
             100.0
         } else {
-            (self.succeeded as f64 / total as f64) * 100.0
+            (usize_to_f64(self.succeeded) / usize_to_f64(total)) * 100.0
         }
     }
 }
 
 impl<T: Send + 'static> StreamProcessor<T> {
     /// Create a new stream processor
+    #[must_use]
     pub fn new(config: StreamConfig) -> Self {
+        let channel_buffer_size = config.channel_buffer_size;
+        let max_concurrency = config.max_concurrency;
         Self {
-            config: config.clone(),
+            config,
             checkpoint: Arc::new(Mutex::new(Checkpoint::origin())),
-            message_queue: Arc::new(Mutex::new(VecDeque::with_capacity(
-                config.channel_buffer_size,
-            ))),
-            semaphore: Arc::new(Semaphore::new(config.max_concurrency)),
+            message_queue: Arc::new(Mutex::new(VecDeque::with_capacity(channel_buffer_size))),
+            semaphore: Arc::new(Semaphore::new(max_concurrency)),
             stats: Arc::new(Mutex::new(StreamStats::new())),
         }
     }
 
     /// Submit a message to the stream
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the channel buffer is full.
     pub async fn submit(&self, message: StreamMessage<T>) -> Result<()> {
         let mut queue = self.message_queue.lock().await;
 
@@ -219,6 +229,11 @@ impl<T: Send + 'static> StreamProcessor<T> {
     }
 
     /// Process a single message
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when semaphore acquisition fails, no message is available,
+    /// processing times out, or the processor returns an error.
     pub async fn process_single<F, Fut>(&self, processor: F) -> Result<()>
     where
         F: FnOnce(T) -> Fut + Send + 'static,
@@ -228,7 +243,7 @@ impl<T: Send + 'static> StreamProcessor<T> {
             .semaphore
             .acquire()
             .await
-            .map_err(|e| Error::Streaming(format!("Semaphore error: {}", e)))?;
+            .map_err(|e| Error::Streaming(format!("Semaphore error: {e}")))?;
 
         let mut queue = self.message_queue.lock().await;
         let message = queue
@@ -258,10 +273,7 @@ impl<T: Send + 'static> StreamProcessor<T> {
             Ok(Ok(())) => {
                 stats.succeeded += 1;
             }
-            Ok(Err(_)) => {
-                stats.failed += 1;
-            }
-            Err(_) => {
+            Ok(Err(_)) | Err(_) => {
                 stats.failed += 1;
             }
         }
@@ -328,6 +340,7 @@ pub struct ProcessResult {
 
 impl ProcessResult {
     /// Create a successful result
+    #[must_use]
     pub fn success() -> Self {
         Self {
             success: true,
@@ -346,6 +359,7 @@ impl ProcessResult {
     }
 
     /// Create a result with duration
+    #[must_use]
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = duration;
         self
@@ -362,6 +376,10 @@ impl Clone for StreamStats {
             started_at: self.started_at,
         }
     }
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    value.to_string().parse::<f64>().unwrap_or(f64::MAX)
 }
 
 #[cfg(test)]
@@ -405,7 +423,7 @@ mod tests {
 
         // Submit and process messages incrementally to avoid buffer overflow
         for i in 0..20 {
-            let message = StreamMessage::new(i, format!("message-{}", i));
+            let message = StreamMessage::new(i, format!("message-{i}"));
             processor.submit(message).await.unwrap();
 
             // Process immediately to keep buffer from filling
@@ -576,15 +594,15 @@ mod tests {
         assert_eq!(stats.received, 0);
         assert_eq!(stats.succeeded, 0);
         assert_eq!(stats.failed, 0);
-        assert_eq!(stats.rate(), 0.0);
-        assert_eq!(stats.success_rate(), 100.0);
+        assert!((stats.rate() - 0.0).abs() < f64::EPSILON);
+        assert!((stats.success_rate() - 100.0).abs() < f64::EPSILON);
 
         stats.received = 100;
         stats.succeeded = 90;
         stats.failed = 10;
-        stats.started_at = Some(Instant::now() - Duration::from_secs(10));
+        stats.started_at = Some(Instant::now().checked_sub(Duration::from_secs(10)).unwrap());
 
-        assert_eq!(stats.success_rate(), 90.0);
+        assert!((stats.success_rate() - 90.0).abs() < f64::EPSILON);
         assert!(stats.rate() > 0.0);
     }
 

@@ -199,7 +199,7 @@ fn test_batch_integration() {
         ..Default::default()
     };
 
-    let mut batch = Batch::from_items(items, config).unwrap();
+    let mut batch = Batch::from_items(items, &config).unwrap();
 
     // Mark some as success, some as failed
     for i in 0..10 {

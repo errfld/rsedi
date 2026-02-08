@@ -75,16 +75,22 @@ impl Extension {
     }
 
     /// Get a function by name
+    #[must_use]
     pub fn get_function(&self, name: &str) -> Option<ExtensionFn> {
         self.functions.get(name).cloned()
     }
 
     /// Check if function exists
+    #[must_use]
     pub fn has_function(&self, name: &str) -> bool {
         self.functions.contains_key(name)
     }
 
     /// Initialize the extension
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the extension initialization hook fails.
     pub fn initialize(&self) -> crate::Result<()> {
         if let Some(hook) = &self.init_hook {
             hook()
@@ -94,6 +100,10 @@ impl Extension {
     }
 
     /// Cleanup the extension
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the extension cleanup hook fails.
     pub fn cleanup(&self) -> crate::Result<()> {
         if let Some(hook) = &self.cleanup_hook {
             hook()
@@ -103,6 +113,7 @@ impl Extension {
     }
 
     /// Get list of registered function names
+    #[must_use]
     pub fn function_names(&self) -> Vec<String> {
         self.functions.keys().cloned().collect()
     }
@@ -128,6 +139,7 @@ pub struct ExtensionRegistry {
 
 impl ExtensionRegistry {
     /// Create a new extension registry
+    #[must_use]
     pub fn new() -> Self {
         Self {
             extensions: Arc::new(Mutex::new(HashMap::new())),
@@ -135,6 +147,10 @@ impl ExtensionRegistry {
     }
 
     /// Register an extension
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned or extension initialization fails.
     pub fn register(&self, extension: Extension) -> crate::Result<()> {
         let mut extensions = self
             .extensions
@@ -149,6 +165,10 @@ impl ExtensionRegistry {
     }
 
     /// Unregister an extension
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned or extension cleanup fails.
     pub fn unregister(&self, name: &str) -> crate::Result<()> {
         let mut extensions = self
             .extensions
@@ -163,6 +183,10 @@ impl ExtensionRegistry {
     }
 
     /// Get an extension by name
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned.
     pub fn get_extension(&self, name: &str) -> crate::Result<Option<Extension>> {
         let extensions = self
             .extensions
@@ -172,6 +196,10 @@ impl ExtensionRegistry {
     }
 
     /// Check if extension exists
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned.
     pub fn has_extension(&self, name: &str) -> crate::Result<bool> {
         let extensions = self
             .extensions
@@ -181,6 +209,11 @@ impl ExtensionRegistry {
     }
 
     /// Call a function from an extension
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the extension/function is missing, lock acquisition fails,
+    /// or the extension function itself fails.
     pub fn call(
         &self,
         extension_name: &str,
@@ -193,7 +226,7 @@ impl ExtensionRegistry {
             .map_err(|_| crate::Error::Mapping("Failed to lock extension registry".to_string()))?;
 
         let extension = extensions.get(extension_name).ok_or_else(|| {
-            crate::Error::Mapping(format!("Extension '{}' not found", extension_name))
+            crate::Error::Mapping(format!("Extension '{extension_name}' not found"))
         })?;
 
         let func = extension.get_function(function_name).ok_or_else(|| {
@@ -209,6 +242,10 @@ impl ExtensionRegistry {
     }
 
     /// Get all extension names
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned.
     pub fn extension_names(&self) -> crate::Result<Vec<String>> {
         let extensions = self
             .extensions
@@ -218,6 +255,10 @@ impl ExtensionRegistry {
     }
 
     /// Cleanup all extensions
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned or any extension cleanup fails.
     pub fn cleanup_all(&self) -> crate::Result<()> {
         let mut extensions = self
             .extensions
@@ -232,6 +273,10 @@ impl ExtensionRegistry {
     }
 
     /// Get number of registered extensions
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned.
     pub fn len(&self) -> crate::Result<usize> {
         let extensions = self
             .extensions
@@ -241,12 +286,17 @@ impl ExtensionRegistry {
     }
 
     /// Check if registry is empty
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registry lock is poisoned.
     pub fn is_empty(&self) -> crate::Result<bool> {
         Ok(self.len()? == 0)
     }
 }
 
 /// Built-in string utilities extension
+#[must_use]
 pub fn create_string_utils_extension() -> Extension {
     let mut ext = Extension::new("string_utils", "1.0.0");
 
@@ -322,7 +372,25 @@ pub fn create_string_utils_extension() -> Extension {
     ext
 }
 
+fn value_to_f64(value: &Value, arg_label: &str) -> crate::Result<f64> {
+    match value {
+        Value::Integer(i) => i.to_string().parse::<f64>().map_err(|e| {
+            crate::Error::Transform(format!(
+                "Cannot convert {arg_label} integer argument to number: {e}"
+            ))
+        }),
+        Value::Decimal(d) => Ok(*d),
+        Value::String(s) => s.parse::<f64>().map_err(|_| {
+            crate::Error::Transform(format!("Cannot parse {arg_label} argument as number"))
+        }),
+        _ => Err(crate::Error::Transform(format!(
+            "Invalid {arg_label} argument type"
+        ))),
+    }
+}
+
 /// Built-in math utilities extension
+#[must_use]
 pub fn create_math_utils_extension() -> Extension {
     let mut ext = Extension::new("math_utils", "1.0.0");
 
@@ -332,30 +400,8 @@ pub fn create_math_utils_extension() -> Extension {
                 "add requires 2 arguments".to_string(),
             ));
         }
-        let a = match &args[0] {
-            Value::Integer(i) => *i as f64,
-            Value::Decimal(d) => *d,
-            Value::String(s) => s.parse::<f64>().map_err(|_| {
-                crate::Error::Transform("Cannot parse first argument as number".to_string())
-            })?,
-            _ => {
-                return Err(crate::Error::Transform(
-                    "Invalid first argument type".to_string(),
-                ));
-            }
-        };
-        let b = match &args[1] {
-            Value::Integer(i) => *i as f64,
-            Value::Decimal(d) => *d,
-            Value::String(s) => s.parse::<f64>().map_err(|_| {
-                crate::Error::Transform("Cannot parse second argument as number".to_string())
-            })?,
-            _ => {
-                return Err(crate::Error::Transform(
-                    "Invalid second argument type".to_string(),
-                ));
-            }
-        };
+        let a = value_to_f64(&args[0], "first")?;
+        let b = value_to_f64(&args[1], "second")?;
         Ok(Value::Decimal(a + b))
     })
     .register_function("multiply", |args| {
@@ -364,30 +410,8 @@ pub fn create_math_utils_extension() -> Extension {
                 "multiply requires 2 arguments".to_string(),
             ));
         }
-        let a = match &args[0] {
-            Value::Integer(i) => *i as f64,
-            Value::Decimal(d) => *d,
-            Value::String(s) => s.parse::<f64>().map_err(|_| {
-                crate::Error::Transform("Cannot parse first argument as number".to_string())
-            })?,
-            _ => {
-                return Err(crate::Error::Transform(
-                    "Invalid first argument type".to_string(),
-                ));
-            }
-        };
-        let b = match &args[1] {
-            Value::Integer(i) => *i as f64,
-            Value::Decimal(d) => *d,
-            Value::String(s) => s.parse::<f64>().map_err(|_| {
-                crate::Error::Transform("Cannot parse second argument as number".to_string())
-            })?,
-            _ => {
-                return Err(crate::Error::Transform(
-                    "Invalid second argument type".to_string(),
-                ));
-            }
-        };
+        let a = value_to_f64(&args[0], "first")?;
+        let b = value_to_f64(&args[1], "second")?;
         Ok(Value::Decimal(a * b))
     });
 
@@ -476,7 +500,7 @@ mod tests {
             let sum: f64 = args
                 .iter()
                 .filter_map(|v| match v {
-                    Value::Integer(i) => Some(*i as f64),
+                    Value::Integer(i) => i.to_string().parse::<f64>().ok(),
                     Value::Decimal(d) => Some(*d),
                     _ => None,
                 })
@@ -644,7 +668,7 @@ mod tests {
 
         for i in 0..3 {
             let count = cleanup_count.clone();
-            let mut ext = Extension::new(format!("ext_{}", i), "1.0.0");
+            let mut ext = Extension::new(format!("ext_{i}"), "1.0.0");
             ext.on_cleanup(move || {
                 count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -836,7 +860,7 @@ mod tests {
             .on_init(|| Ok(()))
             .on_cleanup(|| Ok(()));
 
-        let debug_str = format!("{:?}", ext);
+        let debug_str = format!("{ext:?}");
         assert!(debug_str.contains("debug_test"));
         assert!(debug_str.contains("1.0.0"));
         assert!(debug_str.contains("test_func"));

@@ -128,6 +128,7 @@ pub struct QuarantineStats {
 
 impl<T> QuarantineStore<T> {
     /// Create a new quarantine store
+    #[must_use]
     pub fn new(config: QuarantineConfig) -> Self {
         Self {
             messages: HashMap::new(),
@@ -137,11 +138,16 @@ impl<T> QuarantineStore<T> {
     }
 
     /// Create a store with default config
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(QuarantineConfig::default())
     }
 
     /// Quarantine a message
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the quarantine store is at capacity.
     pub fn quarantine(
         &mut self,
         id: impl Into<String>,
@@ -179,6 +185,10 @@ impl<T> QuarantineStore<T> {
     }
 
     /// Quarantine with full error context
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the quarantine store is at capacity.
     pub fn quarantine_with_context(
         &mut self,
         id: impl Into<String>,
@@ -211,6 +221,7 @@ impl<T> QuarantineStore<T> {
     }
 
     /// Retrieve a quarantined message by ID
+    #[must_use]
     pub fn get(&self, id: &str) -> Option<&QuarantinedMessage<T>> {
         self.messages.get(id)
     }
@@ -221,11 +232,13 @@ impl<T> QuarantineStore<T> {
     }
 
     /// Get all quarantined messages
+    #[must_use]
     pub fn get_all(&self) -> Vec<&QuarantinedMessage<T>> {
         self.messages.values().collect()
     }
 
     /// Get messages by reason
+    #[must_use]
     pub fn get_by_reason(&self, reason: QuarantineReason) -> Vec<&QuarantinedMessage<T>> {
         self.messages
             .values()
@@ -234,6 +247,7 @@ impl<T> QuarantineStore<T> {
     }
 
     /// Get messages that can be retried
+    #[must_use]
     pub fn get_retryable(&self) -> Vec<&QuarantinedMessage<T>> {
         self.messages
             .values()
@@ -242,51 +256,66 @@ impl<T> QuarantineStore<T> {
     }
 
     /// Mark a message for retry
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no message exists for `id`.
     pub fn mark_for_retry(&mut self, id: &str) -> Result<()> {
         if let Some(message) = self.messages.get_mut(id) {
             message.last_retry_at = Some(SystemTime::now());
             message.retry_count += 1;
             Ok(())
         } else {
-            Err(Error::Quarantine(format!("Message not found: {}", id)))
+            Err(Error::Quarantine(format!("Message not found: {id}")))
         }
     }
 
     /// Remove a message from quarantine (successful retry)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no message exists for `id`.
     pub fn remove(&mut self, id: &str) -> Result<QuarantinedMessage<T>> {
         let message = self
             .messages
             .remove(id)
-            .ok_or_else(|| Error::Quarantine(format!("Message not found: {}", id)))?;
+            .ok_or_else(|| Error::Quarantine(format!("Message not found: {id}")))?;
         self.stats.current_count = self.messages.len();
         self.stats.successful_retries += 1;
         Ok(message)
     }
 
     /// Mark a message as permanently failed
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no message exists for `id`.
     pub fn mark_permanent_failure(&mut self, id: &str) -> Result<()> {
         if let Some(message) = self.messages.get_mut(id) {
             message.resolved = true;
             self.stats.permanent_failures += 1;
             Ok(())
         } else {
-            Err(Error::Quarantine(format!("Message not found: {}", id)))
+            Err(Error::Quarantine(format!("Message not found: {id}")))
         }
     }
 
     /// Retry a message (remove from quarantine and return data)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no message exists for `id` or retries are exhausted.
     pub fn retry(&mut self, id: &str) -> Result<(String, T)> {
         // Check max_retries first to avoid borrow issues
         let max_retries = self.config.max_retries;
 
         let message = self
             .get_mut(id)
-            .ok_or_else(|| Error::Quarantine(format!("Message not found: {}", id)))?;
+            .ok_or_else(|| Error::Quarantine(format!("Message not found: {id}")))?;
 
         if message.retry_count >= max_retries {
             return Err(Error::Quarantine(format!(
-                "Max retries exceeded for message: {}",
-                id
+                "Max retries exceeded for message: {id}"
             )));
         }
 
@@ -340,16 +369,19 @@ impl<T> QuarantineStore<T> {
     }
 
     /// Get statistics
+    #[must_use]
     pub fn stats(&self) -> &QuarantineStats {
         &self.stats
     }
 
     /// Get count of quarantined messages
+    #[must_use]
     pub fn len(&self) -> usize {
         self.messages.len()
     }
 
     /// Check if quarantine is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
@@ -373,12 +405,14 @@ impl ErrorContext {
     }
 
     /// Add detail
+    #[must_use]
     pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.details.insert(key.into(), value.into());
         self
     }
 
     /// Set position
+    #[must_use]
     pub fn with_position(mut self, position: impl Into<String>) -> Self {
         self.position = Some(position.into());
         self
@@ -509,7 +543,7 @@ mod tests {
         for i in 0..5 {
             store
                 .quarantine(
-                    format!("msg-{}", i),
+                    format!("msg-{i}"),
                     i,
                     QuarantineReason::ProcessingError,
                     "error",
