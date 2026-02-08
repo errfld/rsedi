@@ -129,36 +129,27 @@ impl ValidationReport {
     }
 
     /// Create and add an error
-    ///
-    /// # Panics
-    ///
-    /// Panics if internal issue storage is unexpectedly empty after insertion.
     pub fn error(&mut self, message: impl Into<String>) -> &mut ValidationIssue {
         let issue = ValidationIssue::new(Severity::Error, message);
         self.issues.push(issue);
-        self.issues.last_mut().unwrap()
+        let index = self.issues.len() - 1;
+        &mut self.issues[index]
     }
 
     /// Create and add a warning
-    ///
-    /// # Panics
-    ///
-    /// Panics if internal issue storage is unexpectedly empty after insertion.
     pub fn warning(&mut self, message: impl Into<String>) -> &mut ValidationIssue {
         let issue = ValidationIssue::new(Severity::Warning, message);
         self.issues.push(issue);
-        self.issues.last_mut().unwrap()
+        let index = self.issues.len() - 1;
+        &mut self.issues[index]
     }
 
     /// Create and add an info message
-    ///
-    /// # Panics
-    ///
-    /// Panics if internal issue storage is unexpectedly empty after insertion.
     pub fn info(&mut self, message: impl Into<String>) -> &mut ValidationIssue {
         let issue = ValidationIssue::new(Severity::Info, message);
         self.issues.push(issue);
-        self.issues.last_mut().unwrap()
+        let index = self.issues.len() - 1;
+        &mut self.issues[index]
     }
 
     /// Get all issues

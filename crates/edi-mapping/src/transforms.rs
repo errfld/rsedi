@@ -2,6 +2,7 @@
 //!
 //! Provides various transformation functions for mapping values.
 
+use crate::numeric::value_to_f64;
 use edi_ir::Value;
 
 /// Transform a value using the specified operation
@@ -179,20 +180,6 @@ fn format_date(date: &(i32, u32, u32), format: &str) -> crate::Result<String> {
     }
 }
 
-fn value_to_f64(value: &Value) -> crate::Result<f64> {
-    match value {
-        Value::Integer(i) => i
-            .to_string()
-            .parse::<f64>()
-            .map_err(|_| crate::Error::Transform("Cannot parse number".to_string())),
-        Value::Decimal(d) => Ok(*d),
-        Value::String(s) => s
-            .parse::<f64>()
-            .map_err(|_| crate::Error::Transform("Cannot parse number".to_string())),
-        _ => Err(crate::Error::Transform("Cannot format number".to_string())),
-    }
-}
-
 /// Format number with specified decimals and thousands separator
 ///
 /// # Errors
@@ -205,7 +192,7 @@ pub fn transform_number_format(
 ) -> crate::Result<Value> {
     let num = match value {
         Value::Null => return Ok(Value::Null),
-        _ => value_to_f64(value)?,
+        _ => value_to_f64(value, "value")?,
     };
     let precision = usize::try_from(decimals)
         .map_err(|_| crate::Error::Transform("Unsupported decimal precision".to_string()))?;

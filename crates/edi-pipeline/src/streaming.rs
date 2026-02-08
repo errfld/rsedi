@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::{AcceptancePolicy, Error, Result, StrictnessLevel};
+use crate::{AcceptancePolicy, Error, Result, StrictnessLevel, numeric::usize_to_f64};
 
 /// Configuration for streaming processing
 #[derive(Debug, Clone)]
@@ -376,10 +376,6 @@ impl Clone for StreamStats {
             started_at: self.started_at,
         }
     }
-}
-
-fn usize_to_f64(value: usize) -> f64 {
-    value.to_string().parse::<f64>().unwrap_or(f64::MAX)
 }
 
 #[cfg(test)]

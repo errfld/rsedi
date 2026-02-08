@@ -12,6 +12,7 @@
 //! EDI files with configurable error handling and streaming support.
 
 pub mod batch;
+mod numeric;
 pub mod pipeline;
 pub mod policies;
 pub mod quarantine;

@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use crate::{
     AcceptancePolicy, Batch, BatchConfig, Error, QuarantineReason, QuarantineStore, Result,
-    StreamConfig, StreamMessage, StreamProcessor, StrictnessLevel,
+    StreamConfig, StreamMessage, StreamProcessor, StrictnessLevel, numeric::u128_to_f64,
+    numeric::usize_to_f64,
 };
 use edi_adapter_edifact::EdifactParser;
 use edi_adapter_edifact::parser::ParseWarning;
@@ -510,16 +511,16 @@ impl Pipeline {
                             None,
                             None,
                         );
-                        let succeeded = outcome.success;
+                        let should_abort = stop_on_failure && !outcome.success;
                         sender.send(outcome).await.map_err(|_| {
                             Error::Streaming(
                                 "Streaming processor failed to publish message result".to_string(),
                             )
                         })?;
-                        if succeeded {
-                            Ok(())
-                        } else {
+                        if should_abort {
                             Err(Error::Streaming("Message processing failed".to_string()))
+                        } else {
+                            Ok(())
                         }
                     })
                     .await
@@ -1050,14 +1051,6 @@ fn message_id(document: &Document, index: usize) -> String {
         .unwrap_or_else(|| format!("message-{}", index + 1))
 }
 
-fn usize_to_f64(value: usize) -> f64 {
-    value.to_string().parse::<f64>().unwrap_or(f64::MAX)
-}
-
-fn u128_to_f64(value: u128) -> f64 {
-    value.to_string().parse::<f64>().unwrap_or(f64::MAX)
-}
-
 fn run_streaming_task<F, Fut>(run: F) -> Result<Vec<MessageOutcome>>
 where
     F: FnOnce() -> Fut + Send + 'static,
@@ -1163,8 +1156,9 @@ fn serialize_xml(document: &Document) -> String {
 }
 
 fn append_node_xml(node: &Node, output: &mut String) {
+    let element_name = sanitize_xml_name(&node.name);
     output.push('<');
-    output.push_str(&xml_escape(&node.name));
+    output.push_str(&element_name);
     output.push('>');
 
     if let Some(value) = node.value.as_ref().and_then(Value::as_string) {
@@ -1176,8 +1170,42 @@ fn append_node_xml(node: &Node, output: &mut String) {
     }
 
     output.push_str("</");
-    output.push_str(&xml_escape(&node.name));
+    output.push_str(&element_name);
     output.push('>');
+}
+
+fn sanitize_xml_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "item".to_string();
+    }
+
+    let mut sanitized = String::with_capacity(trimmed.len() + 1);
+    for (index, ch) in trimmed.chars().enumerate() {
+        if (index == 0 && is_valid_xml_name_start(ch)) || (index > 0 && is_valid_xml_name_char(ch))
+        {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+    }
+
+    if sanitized
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("xml"))
+    {
+        sanitized.insert(0, '_');
+    }
+
+    sanitized
+}
+
+fn is_valid_xml_name_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_valid_xml_name_char(ch: char) -> bool {
+    is_valid_xml_name_start(ch) || ch.is_ascii_digit() || ch == '-' || ch == '.'
 }
 
 fn xml_escape(value: &str) -> String {
@@ -1200,6 +1228,20 @@ fn serialize_edifact(document: &Document) -> std::result::Result<String, String>
     Ok(segments.join("\n"))
 }
 
+fn escape_edifact_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '?' | '+' | ':' | '\'' => {
+                escaped.push('?');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 fn collect_edifact_segments(node: &Node, segments: &mut Vec<String>) {
     if matches!(node.node_type, NodeType::Segment) {
         let mut segment = node.name.clone();
@@ -1215,12 +1257,14 @@ fn collect_edifact_segments(node: &Node, segments: &mut Vec<String>) {
                     .value
                     .as_ref()
                     .and_then(Value::as_string)
+                    .map(|value| escape_edifact_value(&value))
                     .unwrap_or_default()
             } else {
                 element
                     .children
                     .iter()
                     .filter_map(|component| component.value.as_ref().and_then(Value::as_string))
+                    .map(|component| escape_edifact_value(&component))
                     .collect::<Vec<_>>()
                     .join(":")
             };
@@ -1389,6 +1433,37 @@ mod tests {
         assert_eq!(csv, mapped);
         assert_eq!(xml, mapped);
         assert_eq!(edi, mapped);
+    }
+
+    #[test]
+    fn test_xml_output_sanitizes_invalid_element_names() {
+        let mut root = Node::new("xml root", NodeType::Root);
+        root.add_child(Node::with_value(
+            "9 bad tag",
+            NodeType::Element,
+            Value::String("value".to_string()),
+        ));
+
+        let xml = render_output(OutputFormat::Xml, &Document::new(root), None).expect("xml");
+
+        assert!(xml.contains("<_xml_root>"));
+        assert!(xml.contains("<__bad_tag>value</__bad_tag>"));
+    }
+
+    #[test]
+    fn test_edifact_output_escapes_release_characters() {
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut segment = Node::new("FTX", NodeType::Segment);
+        segment.add_child(Node::with_value(
+            "4440",
+            NodeType::Element,
+            Value::String("A+B:C'?D".to_string()),
+        ));
+        root.add_child(segment);
+
+        let edi = render_output(OutputFormat::Edifact, &Document::new(root), None).expect("edi");
+
+        assert_eq!(edi, "FTX+A?+B?:C?'??D'");
     }
 
     #[test]

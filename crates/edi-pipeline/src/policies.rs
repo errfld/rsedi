@@ -129,32 +129,43 @@ mod tests {
 
     #[test]
     fn test_policy_combinations() {
-        // Test all 9 combinations
-        let policies = vec![
-            AcceptancePolicy::AcceptAll,
-            AcceptancePolicy::FailAll,
-            AcceptancePolicy::Quarantine,
+        let expected = [
+            (
+                (AcceptancePolicy::AcceptAll, StrictnessLevel::Permissive),
+                false,
+            ),
+            (
+                (AcceptancePolicy::AcceptAll, StrictnessLevel::Standard),
+                false,
+            ),
+            ((AcceptancePolicy::AcceptAll, StrictnessLevel::Strict), true),
+            (
+                (AcceptancePolicy::FailAll, StrictnessLevel::Permissive),
+                true,
+            ),
+            ((AcceptancePolicy::FailAll, StrictnessLevel::Standard), true),
+            ((AcceptancePolicy::FailAll, StrictnessLevel::Strict), true),
+            (
+                (AcceptancePolicy::Quarantine, StrictnessLevel::Permissive),
+                false,
+            ),
+            (
+                (AcceptancePolicy::Quarantine, StrictnessLevel::Standard),
+                false,
+            ),
+            (
+                (AcceptancePolicy::Quarantine, StrictnessLevel::Strict),
+                true,
+            ),
         ];
 
-        let strictness_levels = vec![
-            StrictnessLevel::Permissive,
-            StrictnessLevel::Standard,
-            StrictnessLevel::Strict,
-        ];
-
-        for policy in &policies {
-            for strictness in &strictness_levels {
-                // Verify each combination can be created
-                assert!(matches!(
-                    (*policy, *strictness),
-                    (
-                        AcceptancePolicy::AcceptAll
-                            | AcceptancePolicy::FailAll
-                            | AcceptancePolicy::Quarantine,
-                        _
-                    )
-                ));
-            }
+        for ((policy, strictness), expected_should_abort) in expected {
+            let should_abort = matches!(policy, AcceptancePolicy::FailAll)
+                || matches!(strictness, StrictnessLevel::Strict);
+            assert_eq!(
+                should_abort, expected_should_abort,
+                "unexpected behavior for {policy:?} + {strictness:?}"
+            );
         }
     }
 

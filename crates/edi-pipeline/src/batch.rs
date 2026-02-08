@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::{AcceptancePolicy, Error, Result, StrictnessLevel};
+use crate::{AcceptancePolicy, Error, Result, StrictnessLevel, numeric::usize_to_f64};
 
 /// A batch of EDI files to be processed together
 #[derive(Debug)]
@@ -361,10 +361,6 @@ impl BatchResult<()> {
             (usize_to_f64(self.successful.len()) / usize_to_f64(total)) * 100.0
         }
     }
-}
-
-fn usize_to_f64(value: usize) -> f64 {
-    value.to_string().parse::<f64>().unwrap_or(f64::MAX)
 }
 
 #[cfg(test)]
