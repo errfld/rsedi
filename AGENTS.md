@@ -404,41 +404,6 @@ Demonstrate end-to-end with ORDERS (EANCOM D96A):
 - `thiserror` - Error handling
 - `dashmap` or similar - Concurrent schema cache
 
-## Next Steps
-
-1. Finalize open questions (schema format, DSL syntax)
-2. Initialize Rust workspace with crate structure
-3. Define IR core structures
-4. Implement EDIFACT streaming parser
-5. Build schema loader with inheritance
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-
-<!-- bv-agent-instructions-v1 -->
-
 ---
 
 ## GitHub Issues Workflow Integration
@@ -479,7 +444,9 @@ gh api -X POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -f is
 gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<child_issue_id>
 ```
 
-### Workflow Pattern (GitHub-Issues-First)
+---
+
+## Workflow Pattern (GitHub-Issues-First)
 
 1. **Pick issue**: determine the best open issue to start based on priority, dependencies, and unblocking impact.
 2. **Mark in progress**: add `status:in-progress` on the selected issue.
@@ -491,7 +458,8 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
    - Review your own changes before opening a PR.
 5. **Push and open PR**: push branch to remote and create a pull request linked to the issue.
 6. **Review cycle**: wait for review, then address/resolve all PR comments.
-7. **Merge and close**: after PR merge (performed by the user/maintainer), the agent may close the related issue automatically only if the merge fully resolves the issue scope.
+7. **Track Learning**: keep a record of what you learned during the implementation process, including any challenges you faced and how you overcame them in AGENT.md under `## Learnings`.
+8. **Merge and close**: after PR merge (performed by the user/maintainer), the agent may close the related issue automatically only if the merge fully resolves the issue scope.
    - Supported merge-detection methods:
      - periodic polling of PR status via API/CLI (e.g. `gh pr view <number> --json state,mergedAt`)
      - repository webhook events for merged PRs
@@ -500,24 +468,6 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
    - Optional stricter behavior: require a maintainer confirmation signal in addition to merged state before closing.
    - Partial resolution: leave the issue open, add a detailed comment describing remaining tasks, and optionally add a `needs-follow-up` label.
 
-### Key Concepts
+--- 
 
-- **Dependencies**: use issue dependency links (`blocked_by`) for scheduling order.
-- **Hierarchy**: use sub-issues for parent/child decomposition.
-- **Priority**: labels `priority:P0`..`priority:P4`.
-- **Types**: labels `type:task`, `type:bug`, `type:feature`.
-- **Agent memory**: keep stable context in issue body sections and append run updates as comments.
-
-### Session Protocol
-
-Before ending any session, follow the comprehensive `Landing the Plane (Session Completion)` workflow above.
-
-### Migration Tooling
-
-Migration and parity scripts live in:
-
-- `scripts/github-migration/migrate-beads-to-github.sh`
-- `scripts/github-migration/validate-beads-github-migration.sh`
-- `docs/operations/github-issues-migration.md`
-
-<!-- end-bv-agent-instructions -->
+## Learnings
