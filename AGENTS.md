@@ -472,3 +472,4 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
 
 ## Learnings
 - 2026-02-09 (`#55`): CSV-to-IR conversion now validates row/header column counts before zipping values. This prevents silent truncation/misalignment when rows contain missing or extra columns and returns a line-specific validation error instead.
+- `edi generate` is most reliable when CSV/JSON inputs are normalized into a stable IR shape (`/rows/row` for CSV, `/rows/item` for JSON arrays), because current mapping runtime path resolution does not support index syntax like `[0]` or wildcards.
