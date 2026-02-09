@@ -3,6 +3,22 @@
 use crate::config::NullRepresentation;
 use thiserror::Error;
 
+/// Whether a row length mismatch is due to missing or extra columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowLengthMismatchKind {
+    Missing,
+    Extra,
+}
+
+impl std::fmt::Display for RowLengthMismatchKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => write!(f, "missing values"),
+            Self::Extra => write!(f, "extra values"),
+        }
+    }
+}
+
 /// Errors that can occur when working with CSV
 #[derive(Error, Debug, Clone)]
 pub enum CsvError {
@@ -33,6 +49,17 @@ pub enum CsvError {
     /// Validation error with row context
     #[error("Validation error at line {line}: {message}")]
     Validation { line: usize, message: String },
+
+    /// Row-length mismatch against expected header width
+    #[error(
+        "Row length mismatch at line {line}: expected {expected} columns, got {actual} ({kind})"
+    )]
+    RowLengthMismatch {
+        line: usize,
+        expected: usize,
+        actual: usize,
+        kind: RowLengthMismatchKind,
+    },
 
     /// Configuration error
     #[error("Configuration error: {0}")]
@@ -73,6 +100,21 @@ impl CsvError {
         }
     }
 
+    /// Create a row-length mismatch error.
+    pub fn row_length_mismatch(
+        line: usize,
+        expected: usize,
+        actual: usize,
+        kind: RowLengthMismatchKind,
+    ) -> Self {
+        Self::RowLengthMismatch {
+            line,
+            expected,
+            actual,
+            kind,
+        }
+    }
+
     /// Create a schema error
     pub fn schema(message: impl Into<String>) -> Self {
         Self::Schema(message.into())
@@ -94,6 +136,7 @@ impl CsvError {
             Self::Read { line, .. } if *line > 0 => Some(*line),
             Self::Conversion { line, .. } => Some(*line),
             Self::Validation { line, .. } => Some(*line),
+            Self::RowLengthMismatch { line, .. } => Some(*line),
             _ => None,
         }
     }
@@ -260,6 +303,16 @@ mod tests {
     fn test_csv_error_no_line() {
         let err = CsvError::write("disk full");
         assert_eq!(err.line_number(), None);
+    }
+
+    #[test]
+    fn test_csv_error_row_length_mismatch() {
+        let err = CsvError::row_length_mismatch(4, 3, 2, RowLengthMismatchKind::Missing);
+        assert_eq!(err.line_number(), Some(4));
+        assert!(
+            err.to_string()
+                .contains("expected 3 columns, got 2 (missing values)")
+        );
     }
 
     #[test]

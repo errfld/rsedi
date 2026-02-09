@@ -1,7 +1,7 @@
 //! CSV reader with streaming support
 
 use crate::config::{CsvConfig, NullRepresentation};
-use crate::errors::{CsvError, CsvResult};
+use crate::errors::{CsvError, CsvResult, RowLengthMismatchKind};
 use crate::schema::{ColumnType, CsvSchema};
 use edi_ir::document::DocumentMetadata;
 use edi_ir::{Document, Node, NodeType, Value};
@@ -59,9 +59,13 @@ impl CsvReader {
     /// This method collects all records into memory. For large files,
     /// consider using `read_iter` instead.
     pub fn read<R: Read>(&self, reader: R) -> CsvResult<Vec<Vec<String>>> {
+        self.read_impl(reader, false)
+    }
+
+    fn read_impl<R: Read>(&self, reader: R, flexible: bool) -> CsvResult<Vec<Vec<String>>> {
         let mut csv_reader = csv::ReaderBuilder::new()
             .has_headers(self.config.has_header)
-            .flexible(true)
+            .flexible(flexible)
             .delimiter(self.config.delimiter_u8())
             .quote(self.config.quote_char_u8())
             .from_reader(reader);
@@ -87,9 +91,17 @@ impl CsvReader {
         &self,
         reader: R,
     ) -> CsvResult<(Vec<String>, Vec<Vec<String>>)> {
+        self.read_with_headers_impl(reader, false)
+    }
+
+    fn read_with_headers_impl<R: Read>(
+        &self,
+        reader: R,
+        flexible: bool,
+    ) -> CsvResult<(Vec<String>, Vec<Vec<String>>)> {
         let mut csv_reader = csv::ReaderBuilder::new()
             .has_headers(true)
-            .flexible(true)
+            .flexible(flexible)
             .delimiter(self.config.delimiter_u8())
             .quote(self.config.quote_char_u8())
             .from_reader(reader);
@@ -117,9 +129,9 @@ impl CsvReader {
     /// consider using `read_iter` and processing records incrementally.
     pub fn read_to_ir<R: Read>(&self, reader: R) -> CsvResult<Document> {
         let (headers, records) = if self.config.has_header {
-            self.read_with_headers(reader)?
+            self.read_with_headers_impl(reader, true)?
         } else {
-            let records = self.read(reader)?;
+            let records = self.read_impl(reader, true)?;
             let headers: Vec<String> = (0..records.first().map(|r| r.len()).unwrap_or(0))
                 .map(|i| format!("col_{}", i))
                 .collect();
@@ -406,18 +418,17 @@ fn validate_row_length(
         return Ok(());
     }
 
-    let mismatch = if actual_columns < expected_columns {
-        "missing value(s)"
+    let mismatch_kind = if actual_columns < expected_columns {
+        RowLengthMismatchKind::Missing
     } else {
-        "extra value(s)"
+        RowLengthMismatchKind::Extra
     };
 
-    Err(CsvError::validation(
+    Err(CsvError::row_length_mismatch(
         line_num,
-        format!(
-            "row has {} columns but expected {} based on headers ({}).",
-            actual_columns, expected_columns, mismatch
-        ),
+        expected_columns,
+        actual_columns,
+        mismatch_kind,
     ))
 }
 
@@ -427,6 +438,7 @@ impl<R: Read> Iterator for CsvRecordIterator<R> {
     fn next(&mut self) -> Option<Self::Item> {
         match self.csv_reader.records().next() {
             Some(Ok(record)) => {
+                let line_number = self.current_line;
                 let values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
 
                 // Infer headers from first row if no header row
@@ -434,9 +446,17 @@ impl<R: Read> Iterator for CsvRecordIterator<R> {
                     self.headers = (0..values.len()).map(|i| format!("col_{}", i)).collect();
                 }
 
+                if !self.headers.is_empty()
+                    && let Err(err) =
+                        validate_row_length(values.len(), self.headers.len(), line_number)
+                {
+                    self.current_line += 1;
+                    return Some(Err(err));
+                }
+
                 let result = CsvRecord {
                     values,
-                    line_number: self.current_line,
+                    line_number,
                     headers: self.headers.clone(),
                 };
 
@@ -637,26 +657,34 @@ mod tests {
     fn test_read_to_ir_errors_on_missing_columns() {
         let data = "name,age,city\nJohn,30";
         let reader = CsvReader::new();
-        let result = reader.read_to_ir(Cursor::new(data));
+        let err = reader.read_to_ir(Cursor::new(data)).unwrap_err();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("line 2"));
-        assert!(err.contains("row has 2 columns but expected 3"));
-        assert!(err.contains("missing value(s)"));
+        assert!(matches!(
+            err,
+            CsvError::RowLengthMismatch {
+                line: 2,
+                expected: 3,
+                actual: 2,
+                kind: RowLengthMismatchKind::Missing,
+            }
+        ));
     }
 
     #[test]
     fn test_read_to_ir_errors_on_extra_columns() {
         let data = "name,age\nJohn,30,unexpected";
         let reader = CsvReader::new();
-        let result = reader.read_to_ir(Cursor::new(data));
+        let err = reader.read_to_ir(Cursor::new(data)).unwrap_err();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("line 2"));
-        assert!(err.contains("row has 3 columns but expected 2"));
-        assert!(err.contains("extra value(s)"));
+        assert!(matches!(
+            err,
+            CsvError::RowLengthMismatch {
+                line: 2,
+                expected: 2,
+                actual: 3,
+                kind: RowLengthMismatchKind::Extra,
+            }
+        ));
     }
 
     #[test]
@@ -706,6 +734,25 @@ mod tests {
         let records: Vec<_> = iter.collect::<Result<_, _>>().unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].headers, vec!["col_0", "col_1"]);
+    }
+
+    #[test]
+    fn test_read_iter_reports_row_length_mismatch() {
+        let data = "name,age\nJohn,30\nJane,25,unexpected";
+        let reader = CsvReader::new();
+        let mut iter = reader.read_iter(Cursor::new(data));
+
+        let _first = iter.next().unwrap().unwrap();
+        let second = iter.next().unwrap().unwrap_err();
+        assert!(matches!(
+            second,
+            CsvError::RowLengthMismatch {
+                line: 3,
+                expected: 2,
+                actual: 3,
+                kind: RowLengthMismatchKind::Extra,
+            }
+        ));
     }
 
     #[test]
@@ -821,6 +868,15 @@ mod tests {
     }
 
     #[test]
+    fn test_read_with_headers_keeps_strict_row_length_behavior() {
+        let data = "name,age\nJohn,30,unexpected";
+        let reader = CsvReader::new();
+        let err = reader.read_with_headers(Cursor::new(data)).unwrap_err();
+
+        assert!(matches!(err, CsvError::Read { line: 2, .. }));
+    }
+
+    #[test]
     fn test_record_to_node() {
         let record = CsvRecord {
             values: vec!["Test".to_string(), "42".to_string()],
@@ -853,9 +909,15 @@ mod tests {
         let err = record
             .to_node(None, &NullRepresentation::EmptyString)
             .unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("line 2"));
-        assert!(message.contains("row has 1 columns but expected 2"));
+        assert!(matches!(
+            err,
+            CsvError::RowLengthMismatch {
+                line: 2,
+                expected: 2,
+                actual: 1,
+                kind: RowLengthMismatchKind::Missing,
+            }
+        ));
     }
 
     #[test]
