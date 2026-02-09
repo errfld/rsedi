@@ -471,3 +471,4 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
 --- 
 
 ## Learnings
+- `edi generate` is most reliable when CSV/JSON inputs are normalized into a stable IR shape (`/rows/row` for CSV, `/rows/item` for JSON arrays), because current mapping runtime path resolution does not support index syntax like `[0]` or wildcards.
