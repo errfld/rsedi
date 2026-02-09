@@ -12,12 +12,13 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use edi_adapter_csv::{ColumnDef, CsvConfig, CsvSchema, CsvWriter};
 use edi_adapter_edifact::parser::ParseWarning;
 use edi_adapter_edifact::{EdifactParser, EdifactSerializer};
 use edi_ir::Document;
 use edi_ir::NodeType;
+use edi_ir::Value;
 use edi_mapping::{MappingDsl, MappingRuntime};
 use edi_schema::SchemaLoader;
 use edi_validation::{Severity, ValidationEngine, ValidationIssue};
@@ -76,6 +77,49 @@ impl TransformOutputFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum GenerateInputFormat {
+    Csv,
+    Json,
+}
+
+impl GenerateInputFormat {
+    fn from_source_type(source_type: &str) -> anyhow::Result<Self> {
+        let normalized = source_type.trim().to_ascii_uppercase();
+        let tokens: Vec<&str> = normalized
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .collect();
+
+        if tokens.contains(&"CSV") {
+            Ok(Self::Csv)
+        } else if tokens.contains(&"JSON") {
+            Ok(Self::Json)
+        } else {
+            bail!(
+                "Unsupported mapping source_type '{}'; expected one containing CSV or JSON",
+                source_type
+            );
+        }
+    }
+
+    fn from_input_path(path: &str) -> Option<Self> {
+        let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+        match extension.as_str() {
+            "csv" => Some(Self::Csv),
+            "json" => Some(Self::Json),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Csv => "CSV",
+            Self::Json => "JSON",
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "edi")]
 #[command(about = "EDI Integration Engine CLI")]
@@ -119,18 +163,21 @@ enum Commands {
         schema: String,
     },
 
-    /// Generate a sample EDI file
+    /// Generate EDI output from CSV/JSON input using a mapping
     Generate {
-        /// Output file path
-        output: String,
+        /// Input file path (CSV or JSON)
+        input: String,
 
-        /// Message type (e.g., ORDERS, DESADV)
-        #[arg(short, long)]
-        message_type: String,
+        /// Output file path (writes to stdout when omitted)
+        output: Option<String>,
 
-        /// Schema version (e.g., D96A)
+        /// Mapping file path
         #[arg(short, long)]
-        version: String,
+        mapping: String,
+
+        /// Source input format (inferred from file extension or mapping source_type when omitted)
+        #[arg(long, value_enum)]
+        input_format: Option<GenerateInputFormat>,
     },
 }
 
@@ -166,15 +213,11 @@ fn run() -> anyhow::Result<CliExitCode> {
         } => transform(&input, output.as_deref(), &mapping, schema.as_deref()),
         Commands::Validate { input, schema } => validate(&input, &schema),
         Commands::Generate {
+            input,
             output,
-            message_type,
-            version,
-        } => {
-            tracing::info!(%output, %message_type, %version, "Generate command requested");
-            Err(anyhow!(
-                "The 'generate' command is not implemented in this MVP"
-            ))
-        }
+            mapping,
+            input_format,
+        } => generate(&input, output.as_deref(), &mapping, input_format),
     }
 }
 
@@ -249,6 +292,234 @@ fn transform(
         Ok(CliExitCode::Success)
     } else {
         Ok(CliExitCode::Warnings)
+    }
+}
+
+fn generate(
+    input_path: &str,
+    output_path: Option<&str>,
+    mapping_path: &str,
+    input_format: Option<GenerateInputFormat>,
+) -> anyhow::Result<CliExitCode> {
+    tracing::info!(
+        input = %input_path,
+        output = output_path.unwrap_or("stdout"),
+        mapping = %mapping_path,
+        requested_input_format = input_format.map(GenerateInputFormat::as_str),
+        "Starting generate command"
+    );
+
+    let mapping = MappingDsl::parse_file(Path::new(mapping_path))
+        .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
+    let resolved_input_format =
+        resolve_generate_input_format(input_path, input_format, &mapping.source_type)
+            .with_context(|| {
+                format!(
+                    "Failed to determine input format for '{}'. Use --input-format csv|json to override inference",
+                    input_path
+                )
+            })?;
+
+    let source_document = load_generate_source_document(input_path, resolved_input_format)
+        .with_context(|| {
+            format!(
+                "Failed to load {} input '{}'",
+                resolved_input_format.as_str(),
+                input_path
+            )
+        })?;
+
+    let output_format = TransformOutputFormat::from_target_type(&mapping.target_type)
+        .with_context(|| format!("Mapping '{}' has invalid target_type", mapping_path))?;
+    if output_format != TransformOutputFormat::Edi {
+        bail!(
+            "Generate mapping '{}' must target EDI output, but target_type '{}' resolves to {}",
+            mapping_path,
+            mapping.target_type,
+            output_format.as_str()
+        );
+    }
+
+    let mut runtime = MappingRuntime::new();
+    let mapped_document = runtime
+        .execute(&mapping, &source_document)
+        .with_context(|| {
+            format!(
+                "Failed to apply mapping '{}' to generate input",
+                mapping_path
+            )
+        })?;
+
+    write_transformed_output(
+        std::slice::from_ref(&mapped_document),
+        TransformOutputFormat::Edi,
+        output_path,
+    )?;
+
+    let destination = output_path.unwrap_or("stdout");
+    tracing::info!(
+        destination = destination,
+        source_format = resolved_input_format.as_str(),
+        "Generate complete"
+    );
+
+    Ok(CliExitCode::Success)
+}
+
+fn resolve_generate_input_format(
+    input_path: &str,
+    input_format: Option<GenerateInputFormat>,
+    source_type: &str,
+) -> anyhow::Result<GenerateInputFormat> {
+    if let Some(explicit) = input_format {
+        return Ok(explicit);
+    }
+
+    if let Some(from_path) = GenerateInputFormat::from_input_path(input_path) {
+        return Ok(from_path);
+    }
+
+    GenerateInputFormat::from_source_type(source_type)
+}
+
+fn load_generate_source_document(
+    input_path: &str,
+    input_format: GenerateInputFormat,
+) -> anyhow::Result<Document> {
+    match input_format {
+        GenerateInputFormat::Csv => load_csv_source_document(input_path),
+        GenerateInputFormat::Json => load_json_source_document(input_path),
+    }
+}
+
+fn load_csv_source_document(input_path: &str) -> anyhow::Result<Document> {
+    let input_file =
+        File::open(input_path).with_context(|| format!("Failed to open '{}'", input_path))?;
+    let reader = edi_adapter_csv::CsvReader::new();
+    let csv_document = reader
+        .read_to_ir(input_file)
+        .map_err(|error| anyhow!("Failed to parse CSV input: {error}"))?;
+
+    Ok(normalize_csv_source_document(csv_document))
+}
+
+fn normalize_csv_source_document(document: Document) -> Document {
+    let edi_ir::Document {
+        root,
+        metadata,
+        schema_ref,
+    } = document;
+
+    let mut rows = edi_ir::Node::new("rows", NodeType::SegmentGroup);
+    for mut record in root.children {
+        record.name = "row".to_string();
+        rows.add_child(record);
+    }
+
+    let mut normalized_root = edi_ir::Node::new("ROOT", NodeType::Root);
+    normalized_root.add_child(rows);
+
+    let mut normalized = Document::with_metadata(normalized_root, metadata);
+    normalized.schema_ref = schema_ref;
+    normalized
+}
+
+fn load_json_source_document(input_path: &str) -> anyhow::Result<Document> {
+    let input_bytes = std::fs::read(input_path)
+        .with_context(|| format!("Failed to read input file '{}'", input_path))?;
+
+    if let Ok(document) = serde_json::from_slice::<Document>(&input_bytes) {
+        return Ok(document);
+    }
+
+    let json_value: serde_json::Value = serde_json::from_slice(&input_bytes)
+        .with_context(|| format!("Failed to parse JSON payload '{}'", input_path))?;
+    Ok(document_from_json_value(&json_value))
+}
+
+fn document_from_json_value(value: &serde_json::Value) -> Document {
+    let mut root = edi_ir::Node::new("ROOT", NodeType::Root);
+    match value {
+        serde_json::Value::Object(properties) => {
+            for (name, property) in properties {
+                root.add_child(json_property_to_node(name, property));
+            }
+        }
+        serde_json::Value::Array(items) => {
+            root.add_child(json_array_to_group("rows", "row", items));
+        }
+        _ => {
+            root.add_child(edi_ir::Node::with_value(
+                "value",
+                NodeType::Field,
+                json_scalar_to_ir_value(value),
+            ));
+        }
+    }
+    Document::new(root)
+}
+
+fn json_property_to_node(name: &str, value: &serde_json::Value) -> edi_ir::Node {
+    match value {
+        serde_json::Value::Object(properties) => {
+            let mut node = edi_ir::Node::new(name, NodeType::SegmentGroup);
+            for (property_name, property_value) in properties {
+                node.add_child(json_property_to_node(property_name, property_value));
+            }
+            node
+        }
+        serde_json::Value::Array(items) => json_array_to_group(name, "item", items),
+        _ => edi_ir::Node::with_value(name, NodeType::Field, json_scalar_to_ir_value(value)),
+    }
+}
+
+fn json_array_to_group(
+    group_name: &str,
+    item_name: &str,
+    items: &[serde_json::Value],
+) -> edi_ir::Node {
+    let mut group = edi_ir::Node::new(group_name, NodeType::SegmentGroup);
+    for item in items {
+        group.add_child(json_array_item_to_node(item_name, item));
+    }
+    group
+}
+
+fn json_array_item_to_node(item_name: &str, value: &serde_json::Value) -> edi_ir::Node {
+    match value {
+        serde_json::Value::Object(properties) => {
+            let mut node = edi_ir::Node::new(item_name, NodeType::Record);
+            for (name, property) in properties {
+                node.add_child(json_property_to_node(name, property));
+            }
+            node
+        }
+        serde_json::Value::Array(items) => json_array_to_group(item_name, "item", items),
+        _ => edi_ir::Node::with_value(item_name, NodeType::Field, json_scalar_to_ir_value(value)),
+    }
+}
+
+fn json_scalar_to_ir_value(value: &serde_json::Value) -> Value {
+    match value {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(boolean) => Value::Boolean(*boolean),
+        serde_json::Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                Value::Integer(integer)
+            } else if let Some(unsigned) = number.as_u64() {
+                if let Ok(integer) = i64::try_from(unsigned) {
+                    Value::Integer(integer)
+                } else {
+                    Value::Decimal(unsigned as f64)
+                }
+            } else if let Some(decimal) = number.as_f64() {
+                Value::Decimal(decimal)
+            } else {
+                Value::String(number.to_string())
+            }
+        }
+        serde_json::Value::String(text) => Value::String(text.clone()),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => Value::Null,
     }
 }
 
@@ -629,6 +900,58 @@ mod tests {
         assert_eq!(lines.next(), Some("A100,1"));
         assert_eq!(lines.next(), Some("A100,2"));
         assert_eq!(lines.next(), None);
+    }
+
+    #[test]
+    fn infer_generate_input_format_from_source_type() {
+        assert_eq!(
+            GenerateInputFormat::from_source_type("CSV_ORDERS").expect("csv"),
+            GenerateInputFormat::Csv
+        );
+        assert_eq!(
+            GenerateInputFormat::from_source_type("ORDERS_JSON").expect("json"),
+            GenerateInputFormat::Json
+        );
+        assert!(GenerateInputFormat::from_source_type("EANCOM_ORDERS").is_err());
+    }
+
+    #[test]
+    fn infer_generate_input_format_from_file_extension() {
+        assert_eq!(
+            GenerateInputFormat::from_input_path("/tmp/orders.csv"),
+            Some(GenerateInputFormat::Csv)
+        );
+        assert_eq!(
+            GenerateInputFormat::from_input_path("/tmp/orders.JSON"),
+            Some(GenerateInputFormat::Json)
+        );
+        assert_eq!(GenerateInputFormat::from_input_path("/tmp/orders"), None);
+    }
+
+    #[test]
+    fn document_from_json_value_normalizes_root_array_to_rows() {
+        let input: serde_json::Value = serde_json::json!([
+            { "DOCUMENT_NUMBER": "ORD-1", "LINE_NUMBER": 1 },
+            { "DOCUMENT_NUMBER": "ORD-1", "LINE_NUMBER": 2 }
+        ]);
+
+        let document = document_from_json_value(&input);
+
+        assert_eq!(document.root.name, "ROOT");
+        let rows = document
+            .root
+            .find_child("rows")
+            .expect("rows group should exist");
+        assert_eq!(rows.children.len(), 2);
+        assert_eq!(rows.children[0].name, "row");
+        assert_eq!(
+            rows.children[0]
+                .find_child("DOCUMENT_NUMBER")
+                .and_then(|field| field.value.as_ref())
+                .and_then(Value::as_string)
+                .as_deref(),
+            Some("ORD-1")
+        );
     }
 
     fn csv_document(fields: &[(&str, &str)]) -> Document {

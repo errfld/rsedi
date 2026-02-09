@@ -5,7 +5,7 @@ Rust workspace for parsing, validating, and transforming UN/EDIFACT EDI (EANCOM-
 ## Status
 
 - MVP focus: ORDERS (EANCOM D96A) parse, validate, map to IR/JSON.
-- CLI supports `transform` and `validate` subcommands. `generate` and config-file support are placeholders.
+- CLI supports `transform`, `validate`, and `generate` subcommands. Config-file support is still a placeholder.
 - CSV adapter and pipeline logic exist as building blocks; DB adapter types are present but not wired to a driver.
 - Streaming at message boundaries is a design goal; current CLI reads full input files into memory.
 
@@ -82,10 +82,10 @@ Validate an EDI file against a schema:
 edi validate <input.edi> -s <schema.yaml>
 ```
 
-Generate a sample EDI file (placeholder):
+Generate EDI from CSV/JSON input using a mapping:
 
 ```bash
-edi generate <output.edi> --message-type ORDERS --version D96A
+edi generate <input.{csv|json}> <output.edi> -m <mapping.yaml> [--input-format csv|json]
 ```
 
 Config file flag (currently ignored in MVP):
@@ -129,7 +129,7 @@ cargo test --all-targets --all-features
 ## Known MVP Limitations
 
 - `edi --config` is accepted but ignored.
-- `edi generate` is not implemented yet.
+- `edi generate` currently supports CSV and JSON input sources only.
 - `edi transform` ignores the optional schema flag for now.
 - CLI runs on full in-memory files rather than streaming chunks.
 
