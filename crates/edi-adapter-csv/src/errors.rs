@@ -316,6 +316,16 @@ mod tests {
     }
 
     #[test]
+    fn test_csv_error_row_length_mismatch_extra() {
+        let err = CsvError::row_length_mismatch(5, 2, 4, RowLengthMismatchKind::Extra);
+        assert_eq!(err.line_number(), Some(5));
+        assert!(
+            err.to_string()
+                .contains("expected 2 columns, got 4 (extra values)")
+        );
+    }
+
+    #[test]
     fn test_parse_context() {
         let mut ctx = ParseContext::new();
         assert_eq!(ctx.line, 1);
