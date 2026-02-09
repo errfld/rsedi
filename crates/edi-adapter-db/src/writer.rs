@@ -12,16 +12,34 @@ use crate::schema::{DbValue, Row, SchemaMapping};
 /// IR write strategy when persisting records to a table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteMode {
+    /// Insert each row as a new record.
     Insert,
-    Update { filter_columns: Vec<String> },
-    Upsert { key_column: String },
+    /// Update existing rows matched by `filter_columns`.
+    Update {
+        /// Column names copied from each row to build the update filter.
+        ///
+        /// Every listed column must exist in the incoming row.
+        filter_columns: Vec<String>,
+    },
+    /// Insert or update rows by conflict key.
+    Upsert {
+        /// Unique key column used for conflict matching.
+        key_column: String,
+    },
 }
 
 /// Batch and transaction behavior for IR write operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOptions {
+    /// Write mode applied to every row in the operation.
     pub mode: WriteMode,
+    /// Maximum number of rows handled per batch.
+    ///
+    /// Defaults to `500` and must be greater than zero.
     pub batch_size: usize,
+    /// If `true`, each batch runs in a transaction.
+    ///
+    /// If `false`, rows are written directly without transaction boundaries.
     pub transactional: bool,
 }
 
@@ -36,16 +54,21 @@ impl Default for WriteOptions {
 }
 
 impl WriteOptions {
+    /// Sets the [`WriteMode`] and returns updated options.
     pub fn with_mode(mut self, mode: WriteMode) -> Self {
         self.mode = mode;
         self
     }
 
+    /// Sets the maximum batch size and returns updated options.
+    ///
+    /// Validation for `batch_size > 0` is enforced during write execution.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size;
         self
     }
 
+    /// Enables or disables per-batch transactions and returns updated options.
     pub fn transactional(mut self, enabled: bool) -> Self {
         self.transactional = enabled;
         self

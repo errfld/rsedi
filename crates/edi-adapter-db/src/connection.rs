@@ -431,12 +431,14 @@ impl DbConnection {
                 let mut updated = 0usize;
                 for row in rows {
                     if row_matches_filter(row, filter) {
+                        let mut candidate = row.clone();
                         for (column, value) in updates {
-                            row.insert(column.clone(), value.clone());
+                            candidate.insert(column.clone(), value.clone());
                         }
                         if let Some(schema) = schema.as_ref() {
-                            schema.validate_row(table, row)?;
+                            schema.validate_row(table, &candidate)?;
                         }
+                        *row = candidate;
                         updated += 1;
                     }
                 }
@@ -770,12 +772,14 @@ impl DbTransaction {
                 let mut updated = 0usize;
                 for row in rows {
                     if row_matches_filter(row, filter) {
+                        let mut candidate = row.clone();
                         for (column, value) in updates {
-                            row.insert(column.clone(), value.clone());
+                            candidate.insert(column.clone(), value.clone());
                         }
                         if let Some(schema) = schema.as_ref() {
-                            schema.validate_row(table, row)?;
+                            schema.validate_row(table, &candidate)?;
                         }
+                        *row = candidate;
                         updated += 1;
                     }
                 }
@@ -1400,6 +1404,63 @@ mod tests {
             Error::Query { details, .. } => assert!(details.contains("filter cannot be empty")),
             _ => panic!("expected query error when update filter is empty"),
         }
+    }
+
+    #[cfg(feature = "memory")]
+    #[tokio::test]
+    async fn test_memory_update_rows_validation_is_atomic() {
+        let conn = DbConnection::memory();
+        conn.connect().await.unwrap();
+        conn.apply_schema(&sample_schema()).await.unwrap();
+        conn.insert_row("orders", sample_row(1)).await.unwrap();
+
+        let mut filter = Row::new();
+        filter.insert("id".to_string(), DbValue::Integer(1));
+
+        let mut invalid_updates = Row::new();
+        invalid_updates.insert("order_no".to_string(), DbValue::Integer(999));
+
+        let err = conn
+            .update_rows("orders", &filter, &invalid_updates)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Schema { .. }));
+
+        let rows = conn.select_rows("orders", None, 0, Some(1)).await.unwrap();
+        assert_eq!(
+            rows[0].get("order_no"),
+            Some(&DbValue::String("PO-1".to_string()))
+        );
+    }
+
+    #[cfg(feature = "memory")]
+    #[tokio::test]
+    async fn test_memory_transaction_update_validation_is_atomic() {
+        let conn = DbConnection::memory();
+        conn.connect().await.unwrap();
+        conn.apply_schema(&sample_schema()).await.unwrap();
+        conn.insert_row("orders", sample_row(1)).await.unwrap();
+
+        let mut tx = conn.begin_transaction().await.unwrap();
+
+        let mut filter = Row::new();
+        filter.insert("id".to_string(), DbValue::Integer(1));
+
+        let mut invalid_updates = Row::new();
+        invalid_updates.insert("order_no".to_string(), DbValue::Integer(999));
+
+        let err = tx
+            .update_rows("orders", &filter, &invalid_updates)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Schema { .. }));
+
+        tx.commit().await.unwrap();
+        let rows = conn.select_rows("orders", None, 0, Some(1)).await.unwrap();
+        assert_eq!(
+            rows[0].get("order_no"),
+            Some(&DbValue::String("PO-1".to_string()))
+        );
     }
 
     #[tokio::test]
