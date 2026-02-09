@@ -61,6 +61,7 @@ impl CsvReader {
     pub fn read<R: Read>(&self, reader: R) -> CsvResult<Vec<Vec<String>>> {
         let mut csv_reader = csv::ReaderBuilder::new()
             .has_headers(self.config.has_header)
+            .flexible(true)
             .delimiter(self.config.delimiter_u8())
             .quote(self.config.quote_char_u8())
             .from_reader(reader);
@@ -88,6 +89,7 @@ impl CsvReader {
     ) -> CsvResult<(Vec<String>, Vec<Vec<String>>)> {
         let mut csv_reader = csv::ReaderBuilder::new()
             .has_headers(true)
+            .flexible(true)
             .delimiter(self.config.delimiter_u8())
             .quote(self.config.quote_char_u8())
             .from_reader(reader);
@@ -176,6 +178,7 @@ impl CsvReader {
 
     /// Convert a CSV row to an IR Node
     fn row_to_node(&self, row: &[String], headers: &[String], line_num: usize) -> CsvResult<Node> {
+        validate_row_length(row.len(), headers.len(), line_num)?;
         let mut record_node = Node::new(format!("record_{}", line_num - 1), NodeType::Record);
 
         for (col_idx, (header, value)) in headers.iter().zip(row.iter()).enumerate() {
@@ -308,6 +311,7 @@ impl<R: Read> CsvRecordIterator<R> {
 
         let mut csv_reader = csv::ReaderBuilder::new()
             .has_headers(has_header)
+            .flexible(true)
             .delimiter(config.delimiter_u8())
             .quote(config.quote_char_u8())
             .from_reader(reader);
@@ -374,6 +378,7 @@ impl CsvRecord {
         schema: Option<&CsvSchema>,
         null_rep: &NullRepresentation,
     ) -> CsvResult<Node> {
+        validate_row_length(self.values.len(), self.headers.len(), self.line_number)?;
         let mut record_node =
             Node::new(format!("record_{}", self.line_number - 1), NodeType::Record);
 
@@ -390,6 +395,30 @@ impl CsvRecord {
 
         Ok(record_node)
     }
+}
+
+fn validate_row_length(
+    actual_columns: usize,
+    expected_columns: usize,
+    line_num: usize,
+) -> CsvResult<()> {
+    if actual_columns == expected_columns {
+        return Ok(());
+    }
+
+    let mismatch = if actual_columns < expected_columns {
+        "missing value(s)"
+    } else {
+        "extra value(s)"
+    };
+
+    Err(CsvError::validation(
+        line_num,
+        format!(
+            "row has {} columns but expected {} based on headers ({}).",
+            actual_columns, expected_columns, mismatch
+        ),
+    ))
 }
 
 impl<R: Read> Iterator for CsvRecordIterator<R> {
@@ -605,6 +634,32 @@ mod tests {
     }
 
     #[test]
+    fn test_read_to_ir_errors_on_missing_columns() {
+        let data = "name,age,city\nJohn,30";
+        let reader = CsvReader::new();
+        let result = reader.read_to_ir(Cursor::new(data));
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("line 2"));
+        assert!(err.contains("row has 2 columns but expected 3"));
+        assert!(err.contains("missing value(s)"));
+    }
+
+    #[test]
+    fn test_read_to_ir_errors_on_extra_columns() {
+        let data = "name,age\nJohn,30,unexpected";
+        let reader = CsvReader::new();
+        let result = reader.read_to_ir(Cursor::new(data));
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("line 2"));
+        assert!(err.contains("row has 3 columns but expected 2"));
+        assert!(err.contains("extra value(s)"));
+    }
+
+    #[test]
     fn test_read_with_schema_type_conversion() {
         let schema = CsvSchema::new()
             .with_header()
@@ -785,6 +840,22 @@ mod tests {
         assert_eq!(node.children.len(), 2);
         assert_eq!(node.children[0].name, "name");
         assert!(matches!(node.children[1].value, Some(Value::Integer(42))));
+    }
+
+    #[test]
+    fn test_record_to_node_errors_on_length_mismatch() {
+        let record = CsvRecord {
+            values: vec!["Test".to_string()],
+            line_number: 2,
+            headers: vec!["name".to_string(), "count".to_string()],
+        };
+
+        let err = record
+            .to_node(None, &NullRepresentation::EmptyString)
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("line 2"));
+        assert!(message.contains("row has 1 columns but expected 2"));
     }
 
     #[test]
