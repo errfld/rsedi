@@ -446,7 +446,7 @@ fn document_from_json_value(value: &serde_json::Value) -> Document {
             }
         }
         serde_json::Value::Array(items) => {
-            root.add_child(json_array_to_group("rows", "row", items));
+            root.add_child(json_array_to_group("rows", "item", items));
         }
         _ => {
             root.add_child(edi_ir::Node::with_value(
@@ -510,7 +510,7 @@ fn json_scalar_to_ir_value(value: &serde_json::Value) -> Value {
                 if let Ok(integer) = i64::try_from(unsigned) {
                     Value::Integer(integer)
                 } else {
-                    Value::Decimal(unsigned as f64)
+                    Value::String(number.to_string())
                 }
             } else if let Some(decimal) = number.as_f64() {
                 Value::Decimal(decimal)
@@ -943,7 +943,7 @@ mod tests {
             .find_child("rows")
             .expect("rows group should exist");
         assert_eq!(rows.children.len(), 2);
-        assert_eq!(rows.children[0].name, "row");
+        assert_eq!(rows.children[0].name, "item");
         assert_eq!(
             rows.children[0]
                 .find_child("DOCUMENT_NUMBER")
@@ -951,6 +951,15 @@ mod tests {
                 .and_then(Value::as_string)
                 .as_deref(),
             Some("ORD-1")
+        );
+    }
+
+    #[test]
+    fn json_scalar_to_ir_value_keeps_large_unsigned_numbers_exact() {
+        let value: serde_json::Value = serde_json::json!(18446744073709551615u64);
+        assert_eq!(
+            json_scalar_to_ir_value(&value),
+            Value::String("18446744073709551615".to_string())
         );
     }
 
