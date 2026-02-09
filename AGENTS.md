@@ -472,4 +472,6 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
 
 ## Learnings
 - 2026-02-09 (`#55`): CSV-to-IR conversion now validates row/header column counts before zipping values. This prevents silent truncation/misalignment when rows contain missing or extra columns and returns a line-specific validation error instead.
-- `edi generate` is most reliable when CSV/JSON inputs are normalized into a stable IR shape (`/rows/row` for CSV, `/rows/item` for JSON arrays), because current mapping runtime path resolution does not support index syntax like `[0]` or wildcards.
+- 2026-02-09: For `edi-adapter-db`, IR write behavior needed explicit mode semantics (`insert`/`update`/`upsert`) plus batch controls in a single API. Adding `WriteMode` + `WriteOptions` avoided duplicated call-site logic and made transactional chunking deterministic for large payloads.
+- 2026-02-09: In-memory transaction paths must validate against applied schema just like direct writes; otherwise tests can pass on libsql while memory-mode allows invalid rows. Capturing schema snapshot in `DbTransaction` fixed parity.
+- 2026-02-09: `edi generate` is most reliable when CSV/JSON inputs are normalized into a stable IR shape (`/rows/row` for CSV, `/rows/item` for JSON arrays), because current mapping runtime path resolution does not support index syntax like `[0]` or wildcards.

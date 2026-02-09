@@ -116,6 +116,20 @@ impl TableSchema {
     }
 
     pub fn validate_row(&self, row: &Row) -> Result<()> {
+        self.validate_partial_row(row)?;
+
+        for column in &self.columns {
+            if !column.nullable && !row.contains_key(&column.name) {
+                return Err(Error::Schema {
+                    details: format!("Missing required column '{}.{}'", self.name, column.name),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_partial_row(&self, row: &Row) -> Result<()> {
         for (column_name, value) in row {
             let column = self.column(column_name).ok_or_else(|| Error::Schema {
                 details: format!("Unknown column '{column_name}' for table '{}'", self.name),
@@ -139,14 +153,6 @@ impl TableSchema {
                         "Type mismatch for '{}.{}': expected {:?}, found {:?}",
                         self.name, column_name, column.column_type, value
                     ),
-                });
-            }
-        }
-
-        for column in &self.columns {
-            if !column.nullable && !row.contains_key(&column.name) {
-                return Err(Error::Schema {
-                    details: format!("Missing required column '{}.{}'", self.name, column.name),
                 });
             }
         }
@@ -187,6 +193,13 @@ impl SchemaMapping {
             details: format!("Unknown table '{table_name}'"),
         })?;
         schema.validate_row(row)
+    }
+
+    pub fn validate_partial_row(&self, table_name: &str, row: &Row) -> Result<()> {
+        let schema = self.table(table_name).ok_or_else(|| Error::Schema {
+            details: format!("Unknown table '{table_name}'"),
+        })?;
+        schema.validate_partial_row(row)
     }
 }
 
@@ -321,5 +334,21 @@ mod tests {
         row.insert("id".to_string(), DbValue::Integer(1));
         row.insert("is_priority".to_string(), DbValue::Boolean(true));
         assert!(schema.validate_row(&row).is_err());
+    }
+
+    #[test]
+    fn test_partial_row_validation_allows_missing_required_columns() {
+        let schema = sample_orders_schema();
+        let mut row = Row::new();
+        row.insert("id".to_string(), DbValue::Integer(1));
+        assert!(schema.validate_partial_row(&row).is_ok());
+    }
+
+    #[test]
+    fn test_partial_row_validation_rejects_non_nullable_null() {
+        let schema = sample_orders_schema();
+        let mut row = Row::new();
+        row.insert("order_no".to_string(), DbValue::Null);
+        assert!(schema.validate_partial_row(&row).is_err());
     }
 }
