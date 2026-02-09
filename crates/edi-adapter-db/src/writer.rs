@@ -131,7 +131,7 @@ impl DbWriter {
     ) -> Result<usize> {
         let rows = collect_rows(&document.root);
         for row in &rows {
-            schema_mapping.validate_row(table, row)?;
+            validate_row_for_mode(schema_mapping, table, row, &options.mode)?;
         }
         self.write_rows_with_options(table, &rows, options).await
     }
@@ -264,6 +264,18 @@ async fn apply_mode_with_transaction(
             tx.upsert_row(table, key_column, row.clone()).await?;
             Ok(1)
         }
+    }
+}
+
+fn validate_row_for_mode(
+    schema_mapping: &SchemaMapping,
+    table: &str,
+    row: &Row,
+    mode: &WriteMode,
+) -> Result<()> {
+    match mode {
+        WriteMode::Update { .. } => schema_mapping.validate_partial_row(table, row),
+        WriteMode::Insert | WriteMode::Upsert { .. } => schema_mapping.validate_row(table, row),
     }
 }
 
@@ -571,6 +583,59 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Query { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_write_from_ir_with_schema_update_allows_partial_rows() {
+        let connection = DbConnection::new();
+        connection.connect().await.unwrap();
+
+        let table = TableSchema::new("orders")
+            .with_column(ColumnDef::new("id", ColumnType::Integer).primary_key())
+            .with_column(ColumnDef::new("order_no", ColumnType::String))
+            .with_column(ColumnDef::new("status", ColumnType::String));
+        let mut schema = SchemaMapping::new();
+        schema.add_table(table);
+        connection.apply_schema(&schema).await.unwrap();
+
+        let writer = DbWriter::new(connection.clone());
+        let mut existing = Row::new();
+        existing.insert("id".to_string(), DbValue::Integer(1));
+        existing.insert("order_no".to_string(), DbValue::String("PO-1".to_string()));
+        existing.insert("status".to_string(), DbValue::String("NEW".to_string()));
+        writer.insert("orders", existing).await.unwrap();
+
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut record = Node::new("orders", NodeType::Record);
+        record.add_child(Node::with_value("id", NodeType::Field, Value::Integer(1)));
+        record.add_child(Node::with_value(
+            "status",
+            NodeType::Field,
+            Value::String("SENT".to_string()),
+        ));
+        root.add_child(record);
+
+        let options = WriteOptions::default().with_mode(WriteMode::Update {
+            filter_columns: vec!["id".to_string()],
+        });
+        let updated = writer
+            .write_from_ir_with_schema("orders", &Document::new(root), &schema, &options)
+            .await
+            .unwrap();
+        assert_eq!(updated, 1);
+
+        let rows = connection
+            .select_rows("orders", None, 0, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows[0].get("order_no"),
+            Some(&DbValue::String("PO-1".to_string()))
+        );
+        assert_eq!(
+            rows[0].get("status"),
+            Some(&DbValue::String("SENT".to_string()))
+        );
     }
 
     #[tokio::test]
