@@ -471,3 +471,6 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
 --- 
 
 ## Learnings
+
+- 2026-02-09: For `edi-adapter-db`, IR write behavior needed explicit mode semantics (`insert`/`update`/`upsert`) plus batch controls in a single API. Adding `WriteMode` + `WriteOptions` avoided duplicated call-site logic and made transactional chunking deterministic for large payloads.
+- 2026-02-09: In-memory transaction paths must validate against applied schema just like direct writes; otherwise tests can pass on libsql while memory-mode allows invalid rows. Capturing schema snapshot in `DbTransaction` fixed parity.

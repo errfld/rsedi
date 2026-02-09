@@ -236,10 +236,12 @@ impl DbConnection {
             #[cfg(feature = "memory")]
             DbBackend::Memory(state) => {
                 let working_state = state.state.read().await.clone();
+                let schema = state.schema.read().await.clone();
                 Ok(DbTransaction {
                     backend: TransactionBackend::Memory {
                         connection: self.clone(),
                         working_state,
+                        schema,
                     },
                     active: true,
                 })
@@ -690,6 +692,7 @@ enum TransactionBackend {
     Memory {
         connection: DbConnection,
         working_state: DatabaseState,
+        schema: Option<SchemaMapping>,
     },
 }
 
@@ -715,7 +718,14 @@ impl DbTransaction {
                 Ok(())
             }
             #[cfg(feature = "memory")]
-            TransactionBackend::Memory { working_state, .. } => {
+            TransactionBackend::Memory {
+                working_state,
+                schema,
+                ..
+            } => {
+                if let Some(schema) = schema.as_ref() {
+                    schema.validate_row(table, &row)?;
+                }
                 working_state
                     .tables
                     .entry(table.to_string())
@@ -744,7 +754,11 @@ impl DbTransaction {
                 Ok(changed as usize)
             }
             #[cfg(feature = "memory")]
-            TransactionBackend::Memory { working_state, .. } => {
+            TransactionBackend::Memory {
+                working_state,
+                schema,
+                ..
+            } => {
                 let rows = working_state
                     .tables
                     .get_mut(table)
@@ -758,6 +772,9 @@ impl DbTransaction {
                     if row_matches_filter(row, filter) {
                         for (column, value) in updates {
                             row.insert(column.clone(), value.clone());
+                        }
+                        if let Some(schema) = schema.as_ref() {
+                            schema.validate_row(table, row)?;
                         }
                         updated += 1;
                     }
@@ -785,7 +802,14 @@ impl DbTransaction {
                 Ok(())
             }
             #[cfg(feature = "memory")]
-            TransactionBackend::Memory { working_state, .. } => {
+            TransactionBackend::Memory {
+                working_state,
+                schema,
+                ..
+            } => {
+                if let Some(schema) = schema.as_ref() {
+                    schema.validate_row(table, &row)?;
+                }
                 let key_value = row.get(key_column).cloned().ok_or_else(|| Error::Query {
                     table: table.to_string(),
                     details: format!("Upsert key column '{key_column}' is missing"),
@@ -857,6 +881,7 @@ impl DbTransaction {
             TransactionBackend::Memory {
                 connection,
                 working_state,
+                ..
             } => {
                 connection.replace_state(working_state.clone()).await?;
             }
@@ -1334,6 +1359,22 @@ mod tests {
         invalid_row.insert("order_no".to_string(), DbValue::String("PO-1".to_string()));
 
         let err = conn.insert_row("orders", invalid_row).await.unwrap_err();
+        assert!(matches!(err, Error::Schema { .. }));
+    }
+
+    #[cfg(feature = "memory")]
+    #[tokio::test]
+    async fn test_memory_transaction_validates_schema() {
+        let conn = DbConnection::memory();
+        conn.connect().await.unwrap();
+        conn.apply_schema(&sample_schema()).await.unwrap();
+
+        let mut tx = conn.begin_transaction().await.unwrap();
+        let mut invalid_row = Row::new();
+        invalid_row.insert("id".to_string(), DbValue::String("wrong-type".to_string()));
+        invalid_row.insert("order_no".to_string(), DbValue::String("PO-1".to_string()));
+
+        let err = tx.insert_row("orders", invalid_row).await.unwrap_err();
         assert!(matches!(err, Error::Schema { .. }));
     }
 

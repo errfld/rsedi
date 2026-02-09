@@ -102,22 +102,38 @@ impl DbReader {
 
     pub async fn read_to_ir(&self, table: &str, options: &QueryOptions) -> Result<Document> {
         let rows = self.read_with_options(table, options).await?;
-        let mut root = Node::new("DB", NodeType::Root);
-
-        for row in rows {
-            let mut record = Node::new(table, NodeType::Record);
-            for (column, value) in row {
-                record.add_child(Node::with_value(
-                    column,
-                    NodeType::Field,
-                    db_to_ir_value(value),
-                ));
-            }
-            root.add_child(record);
-        }
-
-        Ok(Document::new(root))
+        Ok(rows_to_document(table, rows))
     }
+
+    pub async fn read_to_ir_with_schema(
+        &self,
+        table: &str,
+        options: &QueryOptions,
+        schema_mapping: &SchemaMapping,
+    ) -> Result<Document> {
+        let rows = self
+            .read_with_schema(table, options, schema_mapping)
+            .await?;
+        Ok(rows_to_document(table, rows))
+    }
+}
+
+fn rows_to_document(table: &str, rows: Vec<Row>) -> Document {
+    let mut root = Node::new("DB", NodeType::Root);
+
+    for row in rows {
+        let mut record = Node::new(table, NodeType::Record);
+        for (column, value) in row {
+            record.add_child(Node::with_value(
+                column,
+                NodeType::Field,
+                db_to_ir_value(value),
+            ));
+        }
+        root.add_child(record);
+    }
+
+    Document::new(root)
 }
 
 fn db_to_ir_value(value: DbValue) -> Value {
@@ -271,6 +287,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_read_to_ir_with_schema() {
+        let (_, reader) = setup_reader().await;
+        let document = reader
+            .read_to_ir_with_schema("orders", &QueryOptions::default(), &sample_schema())
+            .await
+            .unwrap();
+        assert_eq!(document.root.name, "DB");
+        assert_eq!(document.root.children.len(), 3);
+        assert_eq!(document.root.children[0].node_type, NodeType::Record);
     }
 
     #[tokio::test]
