@@ -244,9 +244,6 @@ impl Pipeline {
         validator: Option<&dyn Validator>,
         mapper: Option<&dyn Mapper>,
     ) -> Result<FileResult> {
-        self.stats.started_at.get_or_insert_with(Instant::now);
-
-        let start = Instant::now();
         let path_str = path.to_string_lossy().to_string();
 
         let file_span = info_span!(
@@ -269,6 +266,9 @@ impl Pipeline {
                 self.config.max_file_size
             )));
         }
+
+        self.stats.started_at.get_or_insert_with(Instant::now);
+        let start = Instant::now();
 
         let content = std::fs::read(path)?;
 
@@ -1705,6 +1705,15 @@ mod tests {
         assert!(result.success);
         assert_eq!(pipeline.stats().messages_processed, 1);
         assert!(pipeline.stats().started_at.is_some());
+    }
+
+    #[test]
+    fn test_process_file_preflight_error_does_not_initialize_started_at() {
+        let mut pipeline = Pipeline::with_defaults();
+
+        let result = pipeline.process_file(PathBuf::from("/path/does/not/exist.edi"));
+        assert!(result.is_err());
+        assert!(pipeline.stats().started_at.is_none());
     }
 
     #[test]
