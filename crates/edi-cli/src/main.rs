@@ -516,7 +516,7 @@ fn parse(
         print_warning(runtime.color, &format_parse_warning(warning, input_path));
     }
 
-    println!(
+    eprintln!(
         "Parse summary: messages={}, warnings={}",
         parsed.documents.len(),
         parsed.warnings.len()

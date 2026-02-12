@@ -78,8 +78,13 @@ fn parse_command_outputs_json_to_stdout() {
     );
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
-    assert!(stdout.contains("\"root\""));
-    assert!(stdout.contains("Parse summary: messages=1, warnings=0"));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should contain valid JSON");
+    assert!(parsed.is_array(), "parse output should be a JSON array");
+    assert!(parsed.to_string().contains("\"root\""));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Parse summary: messages=1, warnings=0"));
 
     let _ = fs::remove_file(edi_input);
 }
