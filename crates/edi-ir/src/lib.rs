@@ -35,17 +35,40 @@ use thiserror::Error;
 /// Errors that can occur when working with the IR
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Node not found at path: {0}")]
-    NodeNotFound(String),
+    #[error("Node not found at path: {path}")]
+    NodeNotFound { path: String },
 
-    #[error("Invalid path: {0}")]
-    InvalidPath(String),
+    #[error("Invalid path '{path}': {reason}")]
+    InvalidPath { path: String, reason: String },
 
     #[error("Type mismatch: expected {expected}, found {found}")]
     TypeMismatch { expected: String, found: String },
 
-    #[error("Conversion error: {0}")]
-    Conversion(String),
+    #[error("Conversion error in {context}: {message}")]
+    Conversion { context: String, message: String },
+}
+
+impl Error {
+    /// Build a node-not-found error with path context.
+    pub fn node_not_found(path: impl Into<String>) -> Self {
+        Self::NodeNotFound { path: path.into() }
+    }
+
+    /// Build an invalid-path error with input path and parsing reason.
+    pub fn invalid_path(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::InvalidPath {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Build a conversion error with conversion context.
+    pub fn conversion(context: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Conversion {
+            context: context.into(),
+            message: message.into(),
+        }
+    }
 }
 
 /// Crate-local result type for IR operations.

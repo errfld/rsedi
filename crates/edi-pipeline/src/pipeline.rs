@@ -255,20 +255,7 @@ impl Pipeline {
         );
         let _file_guard = file_span.enter();
 
-        if !path.exists() {
-            return Err(Error::Pipeline(format!("File not found: {path_str}")));
-        }
-
-        let metadata = std::fs::metadata(path)?;
-        if metadata.len() > self.config.max_file_size as u64 {
-            return Err(Error::Pipeline(format!(
-                "File too large: {} bytes (max: {} bytes)",
-                metadata.len(),
-                self.config.max_file_size
-            )));
-        }
-
-        let content = std::fs::read(path)?;
+        let content = self.read_file_content(path, &path_str)?;
 
         let processing_result = self.process_content(&content, &path_str, validator, mapper);
         let duration = start.elapsed();
@@ -306,7 +293,7 @@ impl Pipeline {
 
                 if let Some(fatal_error) = summary.fatal_error {
                     self.stats.files_failed += 1;
-                    return Err(Error::Pipeline(fatal_error));
+                    return Err(Error::pipeline("process", path_str.clone(), fatal_error));
                 }
 
                 let mut success = true;
@@ -358,6 +345,33 @@ impl Pipeline {
         }
     }
 
+    fn read_file_content(&self, path: &Path, path_str: &str) -> Result<Vec<u8>> {
+        if !path.exists() {
+            return Err(Error::pipeline(
+                "open",
+                path_str.to_string(),
+                "File not found",
+            ));
+        }
+
+        let metadata = std::fs::metadata(path)
+            .map_err(|error| Error::io("metadata", path_str.to_string(), error.to_string()))?;
+        if metadata.len() > self.config.max_file_size as u64 {
+            return Err(Error::pipeline(
+                "size-check",
+                path_str.to_string(),
+                format!(
+                    "File too large: {} bytes (max: {} bytes)",
+                    metadata.len(),
+                    self.config.max_file_size
+                ),
+            ));
+        }
+
+        std::fs::read(path)
+            .map_err(|error| Error::io("read", path_str.to_string(), error.to_string()))
+    }
+
     fn process_content(
         &mut self,
         content: &[u8],
@@ -368,7 +382,7 @@ impl Pipeline {
         let parser = EdifactParser::new();
         let parse_outcome = parser
             .parse_with_warnings(content, path)
-            .map_err(|error| Error::Pipeline(format!("Failed to parse {path}: {error}")))?;
+            .map_err(|error| Error::pipeline("parse", path.to_string(), error.to_string()))?;
 
         if parse_outcome.documents.is_empty() {
             let mut summary = FileSummary {

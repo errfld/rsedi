@@ -37,8 +37,12 @@ use thiserror::Error;
 /// Errors that can occur in the pipeline
 #[derive(Error, Debug, Clone)]
 pub enum Error {
-    #[error("Pipeline error: {0}")]
-    Pipeline(String),
+    #[error("Pipeline error during {operation} for '{path}': {message}")]
+    Pipeline {
+        operation: String,
+        path: String,
+        message: String,
+    },
 
     #[error("Batch error: {0}")]
     Batch(String),
@@ -52,14 +56,88 @@ pub enum Error {
     #[error("Policy error: {0}")]
     Policy(String),
 
-    #[error("IO error: {0}")]
-    Io(String),
+    #[error("IO error during {operation} for '{path}': {message}")]
+    Io {
+        operation: String,
+        path: String,
+        message: String,
+    },
+}
+
+impl Error {
+    /// Create a structured pipeline error with operation/path context.
+    pub fn pipeline(
+        operation: impl Into<String>,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Pipeline {
+            operation: operation.into(),
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create a structured I/O error with operation/path context.
+    pub fn io(
+        operation: impl Into<String>,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Io {
+            operation: operation.into(),
+            path: path.into(),
+            message: message.into(),
+        }
+    }
 }
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
-        Error::Io(e.to_string())
+        Error::io("io", "<unknown>", e.to_string())
     }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipeline_error_preserves_operation_and_path_context() {
+        let error = Error::pipeline("parse", "/tmp/input.edi", "invalid envelope");
+        match error {
+            Error::Pipeline {
+                operation,
+                path,
+                message,
+            } => {
+                assert_eq!(operation, "parse");
+                assert_eq!(path, "/tmp/input.edi");
+                assert_eq!(message, "invalid envelope");
+            }
+            _ => panic!("expected pipeline variant"),
+        }
+    }
+
+    #[test]
+    fn io_error_from_std_error_has_fallback_context() {
+        let io_error = std::fs::File::open("/path/that/does/not/exist")
+            .map_err(Error::from)
+            .expect_err("open should fail");
+
+        match io_error {
+            Error::Io {
+                operation,
+                path,
+                message,
+            } => {
+                assert_eq!(operation, "io");
+                assert_eq!(path, "<unknown>");
+                assert!(!message.is_empty());
+            }
+            _ => panic!("expected io variant"),
+        }
+    }
+}
