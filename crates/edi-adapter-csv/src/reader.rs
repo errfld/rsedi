@@ -194,10 +194,6 @@ impl CsvReader {
 
     /// Check if a value represents null
     fn is_null_value(&self, value: &str) -> bool {
-        if value.is_empty() {
-            return true;
-        }
-
         match &self.config.null_representation {
             NullRepresentation::NullString => value == "NULL",
             NullRepresentation::BackslashN => value == "\\N",
@@ -378,7 +374,7 @@ impl CsvRecord {
             Node::new(format!("record_{}", self.line_number - 1), NodeType::Record);
 
         for (col_idx, (header, value)) in self.headers.iter().zip(self.values.iter()).enumerate() {
-            let parsed_value = if value.is_empty() || is_null_string(value, null_rep) {
+            let parsed_value = if is_null_string(value, null_rep) {
                 Value::Null
             } else {
                 parse_value_with_schema(value, schema, col_idx, self.line_number, header)?
@@ -693,6 +689,42 @@ mod tests {
 
         let first_record = &doc.root.children[0];
         assert!(matches!(first_record.children[1].value, Some(Value::Null)));
+    }
+
+    #[test]
+    fn test_empty_string_not_null_when_null_representation_is_not_empty_string() {
+        let schema = CsvSchema::new()
+            .with_header()
+            .add_column(ColumnDef::new("name"))
+            .add_column(ColumnDef::new("value"));
+
+        let config = CsvConfig::new().null_representation(NullRepresentation::NullString);
+        let reader = CsvReader::new().with_config(config).with_schema(schema);
+        let data = "name,value\nJohn,";
+        let doc = reader.read_to_ir(Cursor::new(data)).unwrap();
+
+        assert!(matches!(
+            doc.root.children[0].children[1].value,
+            Some(Value::String(ref value)) if value.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_record_to_node_keeps_empty_string_when_null_representation_is_null_string() {
+        let record = CsvRecord {
+            values: vec!["".to_string()],
+            line_number: 2,
+            headers: vec!["value".to_string()],
+        };
+
+        let node = record
+            .to_node(None, &NullRepresentation::NullString)
+            .unwrap();
+
+        assert!(matches!(
+            node.children[0].value,
+            Some(Value::String(ref value)) if value.is_empty()
+        ));
     }
 
     #[test]
