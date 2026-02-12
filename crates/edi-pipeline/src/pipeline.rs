@@ -472,8 +472,6 @@ impl Pipeline {
         let stream_config = StreamConfig {
             max_concurrency: self.config.batch_config.max_size.clamp(1, 64),
             channel_buffer_size: self.config.batch_config.max_size.saturating_mul(2).max(1),
-            acceptance_policy: self.config.acceptance_policy,
-            strictness: self.config.strictness,
             ..StreamConfig::default()
         };
 
