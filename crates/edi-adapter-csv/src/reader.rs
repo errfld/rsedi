@@ -661,7 +661,7 @@ mod tests {
             .next()
             .expect("iterator should yield an error")
             .expect_err("header parse error must be propagated");
-        assert!(err.to_string().contains("line 1"));
+        assert!(matches!(err, CsvError::Read { line: 1, .. }));
     }
 
     #[test]
