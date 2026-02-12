@@ -244,7 +244,6 @@ impl Pipeline {
         validator: Option<&dyn Validator>,
         mapper: Option<&dyn Mapper>,
     ) -> Result<FileResult> {
-        let start = Instant::now();
         let path_str = path.to_string_lossy().to_string();
 
         let file_span = info_span!(
@@ -267,6 +266,9 @@ impl Pipeline {
                 self.config.max_file_size
             )));
         }
+
+        self.stats.started_at.get_or_insert_with(Instant::now);
+        let start = Instant::now();
 
         let content = std::fs::read(path)?;
 
@@ -720,7 +722,8 @@ impl Pipeline {
             .stats
             .started_at
             .map(|started| started.elapsed())
-            .unwrap_or_default();
+            .filter(|duration| !duration.is_zero())
+            .unwrap_or(self.stats.total_processing_time);
 
         let elapsed_secs = elapsed.as_secs_f64();
         let bytes_per_second = if elapsed_secs > 0.0 {
@@ -1676,6 +1679,41 @@ mod tests {
         assert!(metrics.files_per_second >= 0.0);
         assert!(metrics.messages_per_second >= 0.0);
         assert!(metrics.throughput_mbps >= 0.0);
+    }
+
+    #[test]
+    fn test_metrics_fallback_to_total_processing_time_without_started_at() {
+        let mut pipeline = Pipeline::with_defaults();
+        pipeline.stats.files_processed = 2;
+        pipeline.stats.messages_processed = 4;
+        pipeline.stats.bytes_processed = 1_000_000;
+        pipeline.stats.total_processing_time = Duration::from_secs(2);
+
+        let metrics = pipeline.metrics();
+        assert!(metrics.throughput_mbps > 0.0);
+        assert!(metrics.messages_per_second > 0.0);
+        assert!(metrics.files_per_second > 0.0);
+    }
+
+    #[test]
+    fn test_process_file_initializes_started_at_without_explicit_start() {
+        let mut pipeline = Pipeline::with_defaults();
+
+        let file = create_test_file(&valid_multi_message_file(1));
+        let result = pipeline.process_file(file.path()).expect("process file");
+
+        assert!(result.success);
+        assert_eq!(pipeline.stats().messages_processed, 1);
+        assert!(pipeline.stats().started_at.is_some());
+    }
+
+    #[test]
+    fn test_process_file_preflight_error_does_not_initialize_started_at() {
+        let mut pipeline = Pipeline::with_defaults();
+
+        let result = pipeline.process_file(PathBuf::from("/path/does/not/exist.edi"));
+        assert!(result.is_err());
+        assert!(pipeline.stats().started_at.is_none());
     }
 
     #[test]
