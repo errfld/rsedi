@@ -887,7 +887,7 @@ impl ValidationEngine {
                         element_def.id, value
                     ));
                 }
-                if element_def.data_type == "n" && !value.chars().all(char::is_numeric) {
+                if element_def.data_type == "n" && !value.chars().all(|ch| ch.is_ascii_digit()) {
                     return Err(format!(
                         "Element '{}' should be numeric only, got '{}'",
                         element_def.id, value
@@ -897,7 +897,7 @@ impl ValidationEngine {
             }
             "dt" => {
                 // Date format
-                if value.len() != 8 || !value.chars().all(char::is_numeric) {
+                if value.len() != 8 || !value.chars().all(|ch| ch.is_ascii_digit()) {
                     return Err(format!(
                         "Element '{}' should be date format (YYYYMMDD), got '{}'",
                         element_def.id, value
@@ -907,7 +907,9 @@ impl ValidationEngine {
             }
             "tm" => {
                 // Time format
-                if !(value.len() == 4 || value.len() == 6) || !value.chars().all(char::is_numeric) {
+                if !(value.len() == 4 || value.len() == 6)
+                    || !value.chars().all(|ch| ch.is_ascii_digit())
+                {
                     return Err(format!(
                         "Element '{}' should be time format (HHMM or HHMMSS), got '{}'",
                         element_def.id, value
@@ -1298,6 +1300,21 @@ mod tests {
 
         let result = engine.validate(&doc).unwrap();
         assert!(result.is_valid || !result.has_errors());
+    }
+
+    #[test]
+    fn test_numeric_date_and_time_validation_require_ascii_digits() {
+        let numeric_def = ElementDefinition::new("6060", "Quantity", "n");
+        assert!(ValidationEngine::validate_data_type_for_element("12345", &numeric_def).is_ok());
+        assert!(ValidationEngine::validate_data_type_for_element("١٢٣٤٥", &numeric_def).is_err());
+
+        let date_def = ElementDefinition::new("2380", "Date", "dt");
+        assert!(ValidationEngine::validate_data_type_for_element("20260112", &date_def).is_ok());
+        assert!(ValidationEngine::validate_data_type_for_element("٢٠٢٦٠١١٢", &date_def).is_err());
+
+        let time_def = ElementDefinition::new("2379", "Time", "tm");
+        assert!(ValidationEngine::validate_data_type_for_element("1215", &time_def).is_ok());
+        assert!(ValidationEngine::validate_data_type_for_element("١٢١٥", &time_def).is_err());
     }
 
     #[test]
