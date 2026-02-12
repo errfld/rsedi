@@ -96,8 +96,6 @@ pub struct QuarantineConfig {
     pub max_age: Option<Duration>,
     /// Maximum retry attempts
     pub max_retries: u32,
-    /// Whether to persist quarantine
-    pub persistent: bool,
 }
 
 impl Default for QuarantineConfig {
@@ -106,7 +104,6 @@ impl Default for QuarantineConfig {
             max_size: 1000,
             max_age: Some(Duration::from_secs(7 * 24 * 60 * 60)), // 7 days
             max_retries: 3,
-            persistent: false,
         }
     }
 }
@@ -534,7 +531,6 @@ mod tests {
             max_size: 100,
             max_age: Some(Duration::from_millis(50)),
             max_retries: 3,
-            persistent: false,
         };
 
         let mut store = QuarantineStore::new(config);
@@ -595,7 +591,6 @@ mod tests {
             max_size: 2,
             max_age: None,
             max_retries: 3,
-            persistent: false,
         };
 
         let mut store = QuarantineStore::new(config);
@@ -621,7 +616,6 @@ mod tests {
             max_size: 10,
             max_age: None,
             max_retries: 2,
-            persistent: false,
         };
 
         let mut store = QuarantineStore::new(config);
