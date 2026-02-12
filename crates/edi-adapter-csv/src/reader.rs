@@ -295,6 +295,7 @@ impl Default for CsvReader {
 pub struct CsvRecordIterator<R: Read> {
     csv_reader: csv::Reader<R>,
     headers: Vec<String>,
+    pending_error: Option<CsvError>,
     _config: CsvConfig,
     _schema: Option<CsvSchema>,
     current_line: usize,
@@ -312,19 +313,23 @@ impl<R: Read> CsvRecordIterator<R> {
             .quote(config.quote_char_u8())
             .from_reader(reader);
 
-        let headers: Vec<String> = if has_header {
-            csv_reader
-                .headers()
-                .map(|h| h.iter().map(|s| s.to_string()).collect())
-                .unwrap_or_default()
+        let (headers, pending_error) = if has_header {
+            match csv_reader.headers() {
+                Ok(headers) => (
+                    headers.iter().map(|s| s.to_string()).collect(),
+                    Option::<CsvError>::None,
+                ),
+                Err(error) => (Vec::new(), Some(CsvError::read_at(1, error.to_string()))),
+            }
         } else {
             // We'll infer headers from the first row if needed
-            Vec::new()
+            (Vec::new(), None)
         };
 
         Self {
             csv_reader,
             headers,
+            pending_error,
             _config: config,
             _schema: schema,
             current_line: if has_header { 2 } else { 1 },
@@ -396,6 +401,10 @@ impl<R: Read> Iterator for CsvRecordIterator<R> {
     type Item = CsvResult<CsvRecord>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(error) = self.pending_error.take() {
+            return Some(Err(error));
+        }
+
         match self.csv_reader.records().next() {
             Some(Ok(record)) => {
                 let values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
@@ -640,6 +649,19 @@ mod tests {
         assert_eq!(records[0].line_number, 2);
         assert_eq!(records[1].line_number, 3);
         assert_eq!(records[2].line_number, 4);
+    }
+
+    #[test]
+    fn test_read_iter_propagates_header_parse_errors() {
+        let data = b"name,\xFF\nvalue,1".to_vec();
+        let reader = CsvReader::new();
+        let mut iter = reader.read_iter(Cursor::new(data));
+
+        let err = iter
+            .next()
+            .expect("iterator should yield an error")
+            .expect_err("header parse error must be propagated");
+        assert!(err.to_string().contains("line 1"));
     }
 
     #[test]
