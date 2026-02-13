@@ -294,7 +294,7 @@ impl Pipeline {
 
                 if let Some(fatal_error) = summary.fatal_error {
                     self.stats.files_failed += 1;
-                    return Err(Error::pipeline("process", path_str.clone(), fatal_error));
+                    return Err(Error::pipeline("process", path_str, fatal_error));
                 }
 
                 let mut success = true;
