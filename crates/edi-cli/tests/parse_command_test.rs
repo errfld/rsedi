@@ -91,7 +91,7 @@ fn parse_command_outputs_json_to_stdout() {
 
 #[test]
 fn invalid_config_returns_fatal_exit_code() {
-    let bad_config = write_temp_file("bad-cli-config", "yaml", ":\n  not: valid");
+    let bad_config = write_temp_file("bad-cli-config", "yaml", "color: neon");
     let edi_input = write_temp_file(
         "parse-with-bad-config",
         "edi",

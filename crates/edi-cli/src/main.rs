@@ -49,7 +49,7 @@ enum ColorMode {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct CliConfig {
     progress: bool,
     progress_threshold_bytes: u64,
