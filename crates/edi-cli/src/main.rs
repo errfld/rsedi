@@ -322,7 +322,11 @@ fn default_config_paths() -> Vec<PathBuf> {
         paths.push(current_dir.join(".edi-cli.yaml"));
     }
 
-    if let Some(home) = env::var_os("HOME") {
+    if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
+        paths.push(PathBuf::from(config_home).join("edi/cli.yaml"));
+    } else if let Some(appdata) = env::var_os("APPDATA") {
+        paths.push(PathBuf::from(appdata).join("edi/cli.yaml"));
+    } else if let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
         paths.push(PathBuf::from(home).join(".config/edi/cli.yaml"));
     }
 

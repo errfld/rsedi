@@ -80,8 +80,13 @@ fn parse_command_outputs_json_to_stdout() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should contain valid JSON");
-    assert!(parsed.is_array(), "parse output should be a JSON array");
-    assert!(parsed.to_string().contains("\"root\""));
+    let documents = parsed
+        .as_array()
+        .expect("parse output should be a JSON array");
+    assert!(
+        documents.iter().any(|document| document.get("root").is_some()),
+        "at least one parsed document should include a 'root' field"
+    );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Parse summary: messages=1, warnings=0"));
