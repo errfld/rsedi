@@ -100,24 +100,95 @@ impl DbReader {
         Ok(rows)
     }
 
+    /// Reads rows from `table` using `options` and converts them into an IR [`Document`].
+    ///
+    /// Returns a root `DB` node containing one record node per row. Empty result sets
+    /// produce an empty document (root with no children).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying read fails, including connection, SQL, and
+    /// query errors from [`Self::read_with_options`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use edi_adapter_db::{DbConnection, DbReader, QueryOptions, Result};
+    ///
+    /// # async fn run() -> Result<()> {
+    /// let connection = DbConnection::new();
+    /// connection.connect().await?;
+    /// let reader = DbReader::new(connection);
+    ///
+    /// let document = reader
+    ///     .read_to_ir("orders", &QueryOptions::default().with_limit(10))
+    ///     .await?;
+    /// assert_eq!(document.root.name, "DB");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn read_to_ir(&self, table: &str, options: &QueryOptions) -> Result<Document> {
         let rows = self.read_with_options(table, options).await?;
-        let mut root = Node::new("DB", NodeType::Root);
-
-        for row in rows {
-            let mut record = Node::new(table, NodeType::Record);
-            for (column, value) in row {
-                record.add_child(Node::with_value(
-                    column,
-                    NodeType::Field,
-                    db_to_ir_value(value),
-                ));
-            }
-            root.add_child(record);
-        }
-
-        Ok(Document::new(root))
+        Ok(rows_to_document(table, rows))
     }
+
+    /// Reads rows from `table` with schema-aware decoding and converts them into an IR
+    /// [`Document`].
+    ///
+    /// Uses `schema_mapping` for typed reads and row validation before conversion. The
+    /// table must exist in `schema_mapping`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when schema lookup/validation fails, or if the underlying query
+    /// fails in [`Self::read_with_schema`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use edi_adapter_db::{DbConnection, DbReader, QueryOptions, Result, SchemaMapping};
+    ///
+    /// # async fn run(schema_mapping: SchemaMapping) -> Result<()> {
+    /// let connection = DbConnection::new();
+    /// connection.connect().await?;
+    /// let reader = DbReader::new(connection);
+    ///
+    /// let document = reader
+    ///     .read_to_ir_with_schema("orders", &QueryOptions::default(), &schema_mapping)
+    ///     .await?;
+    /// assert_eq!(document.root.name, "DB");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn read_to_ir_with_schema(
+        &self,
+        table: &str,
+        options: &QueryOptions,
+        schema_mapping: &SchemaMapping,
+    ) -> Result<Document> {
+        let rows = self
+            .read_with_schema(table, options, schema_mapping)
+            .await?;
+        Ok(rows_to_document(table, rows))
+    }
+}
+
+fn rows_to_document(table: &str, rows: Vec<Row>) -> Document {
+    let mut root = Node::new("DB", NodeType::Root);
+
+    for row in rows {
+        let mut record = Node::new(table, NodeType::Record);
+        for (column, value) in row {
+            record.add_child(Node::with_value(
+                column,
+                NodeType::Field,
+                db_to_ir_value(value),
+            ));
+        }
+        root.add_child(record);
+    }
+
+    Document::new(root)
 }
 
 fn db_to_ir_value(value: DbValue) -> Value {
@@ -271,6 +342,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_read_to_ir_with_schema() {
+        let (_, reader) = setup_reader().await;
+        let document = reader
+            .read_to_ir_with_schema("orders", &QueryOptions::default(), &sample_schema())
+            .await
+            .unwrap();
+        assert_eq!(document.root.name, "DB");
+        assert_eq!(document.root.children.len(), 3);
+        assert_eq!(document.root.children[0].node_type, NodeType::Record);
     }
 
     #[tokio::test]

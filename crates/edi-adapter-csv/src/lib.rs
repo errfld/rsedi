@@ -30,7 +30,7 @@ pub mod writer;
 
 // Re-export main types
 pub use config::{CsvConfig, Encoding, LineEnding, NullRepresentation, RecordTerminator};
-pub use errors::{CsvError, CsvResult, ParseContext, SchemaError};
+pub use errors::{CsvError, CsvResult, ParseContext, RowLengthMismatchKind, SchemaError};
 pub use reader::{CsvReader, CsvRecordIterator};
 pub use schema::{ColumnDef, ColumnType, CsvSchema};
 pub use writer::CsvWriter;
