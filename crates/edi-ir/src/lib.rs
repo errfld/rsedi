@@ -73,3 +73,41 @@ impl Error {
 
 /// Crate-local result type for IR operations.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn node_not_found_constructor_preserves_path() {
+        let error = Error::node_not_found("/root/child");
+        match error {
+            Error::NodeNotFound { path } => assert_eq!(path, "/root/child"),
+            _ => panic!("expected node not found variant"),
+        }
+    }
+
+    #[test]
+    fn invalid_path_constructor_preserves_fields() {
+        let error = Error::invalid_path("/root[", "unclosed bracket");
+        match error {
+            Error::InvalidPath { path, reason } => {
+                assert_eq!(path, "/root[");
+                assert_eq!(reason, "unclosed bracket");
+            }
+            _ => panic!("expected invalid path variant"),
+        }
+    }
+
+    #[test]
+    fn conversion_constructor_preserves_fields() {
+        let error = Error::conversion("CSV -> IR", "invalid integer");
+        match error {
+            Error::Conversion { context, message } => {
+                assert_eq!(context, "CSV -> IR");
+                assert_eq!(message, "invalid integer");
+            }
+            _ => panic!("expected conversion variant"),
+        }
+    }
+}

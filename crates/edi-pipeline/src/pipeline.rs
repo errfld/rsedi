@@ -347,16 +347,13 @@ impl Pipeline {
     }
 
     fn read_file_content(&self, path: &Path, path_str: &str) -> Result<Vec<u8>> {
-        if !path.exists() {
-            return Err(Error::pipeline(
-                "open",
-                path_str.to_string(),
-                "File not found",
-            ));
-        }
-
-        let metadata = std::fs::metadata(path)
-            .map_err(|error| Error::io("metadata", path_str.to_string(), error.to_string()))?;
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::pipeline("open", path_str.to_string(), "File not found")
+            } else {
+                Error::io("metadata", path_str.to_string(), error.to_string())
+            }
+        })?;
         if metadata.len() > self.config.max_file_size as u64 {
             return Err(Error::pipeline(
                 "size-check",
@@ -369,8 +366,13 @@ impl Pipeline {
             ));
         }
 
-        std::fs::read(path)
-            .map_err(|error| Error::io("read", path_str.to_string(), error.to_string()))
+        std::fs::read(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::pipeline("open", path_str.to_string(), "File not found")
+            } else {
+                Error::io("read", path_str.to_string(), error.to_string())
+            }
+        })
     }
 
     fn process_content(
