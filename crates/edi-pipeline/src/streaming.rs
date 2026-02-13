@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::{AcceptancePolicy, Error, Result, StrictnessLevel, numeric::usize_to_f64};
+use crate::{Error, Result, numeric::usize_to_f64};
 
 /// Configuration for streaming processing
 #[derive(Debug, Clone)]
@@ -23,10 +23,6 @@ pub struct StreamConfig {
     pub enable_checkpointing: bool,
     /// Checkpoint interval
     pub checkpoint_interval: Option<Duration>,
-    /// Acceptance policy for errors
-    pub acceptance_policy: AcceptancePolicy,
-    /// Strictness level
-    pub strictness: StrictnessLevel,
 }
 
 impl Default for StreamConfig {
@@ -37,8 +33,6 @@ impl Default for StreamConfig {
             message_timeout: Duration::from_secs(30),
             enable_checkpointing: true,
             checkpoint_interval: Some(Duration::from_secs(60)),
-            acceptance_policy: AcceptancePolicy::default(),
-            strictness: StrictnessLevel::default(),
         }
     }
 }

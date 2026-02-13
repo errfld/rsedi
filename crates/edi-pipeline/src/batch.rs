@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::{AcceptancePolicy, Error, Result, StrictnessLevel, numeric::usize_to_f64};
+use crate::{Error, Result, numeric::usize_to_f64};
 
 /// A batch of EDI files to be processed together
 #[derive(Debug)]
@@ -81,10 +81,6 @@ pub struct BatchConfig {
     pub max_retries: u32,
     /// Whether to preserve item order
     pub preserve_order: bool,
-    /// Acceptance policy for partial failures
-    pub acceptance_policy: AcceptancePolicy,
-    /// Strictness level
-    pub strictness: StrictnessLevel,
 }
 
 impl Default for BatchConfig {
@@ -94,8 +90,6 @@ impl Default for BatchConfig {
             max_duration: Some(Duration::from_secs(60)),
             max_retries: 3,
             preserve_order: true,
-            acceptance_policy: AcceptancePolicy::default(),
-            strictness: StrictnessLevel::default(),
         }
     }
 }
@@ -413,8 +407,6 @@ mod tests {
             max_duration: Some(Duration::from_millis(50)),
             max_retries: 3,
             preserve_order: true,
-            acceptance_policy: AcceptancePolicy::default(),
-            strictness: StrictnessLevel::default(),
         };
 
         let batch = Batch::<i32>::new(&config);
@@ -455,8 +447,6 @@ mod tests {
             max_duration: None,
             max_retries: 3,
             preserve_order: true,
-            acceptance_policy: AcceptancePolicy::default(),
-            strictness: StrictnessLevel::default(),
         };
 
         let items = vec![("first", 1), ("second", 2), ("third", 3)];
@@ -533,8 +523,6 @@ mod tests {
             max_duration: None,
             max_retries: 3,
             preserve_order: true,
-            acceptance_policy: AcceptancePolicy::default(),
-            strictness: StrictnessLevel::default(),
         };
 
         let items = vec![("1", 1), ("2", 2), ("3", 3)];
