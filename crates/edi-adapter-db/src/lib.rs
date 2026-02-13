@@ -14,7 +14,7 @@ pub mod writer;
 pub use connection::{ConnectionConfig, DbConnection, DbTransaction};
 pub use reader::{DbReader, QueryOptions};
 pub use schema::{ColumnDef, ColumnType, DbValue, ForeignKey, Row, SchemaMapping, TableSchema};
-pub use writer::DbWriter;
+pub use writer::{DbWriter, WriteMode, WriteOptions};
 
 use thiserror::Error;
 
