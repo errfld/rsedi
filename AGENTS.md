@@ -468,6 +468,17 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
    - Optional stricter behavior: require a maintainer confirmation signal in addition to merged state before closing.
    - Partial resolution: leave the issue open, add a detailed comment describing remaining tasks, and optionally add a `needs-follow-up` label.
 
+### PR/Comment Markdown Formatting (Required)
+
+- Never pass multiline Markdown directly in a quoted CLI string (for example with `--body "line1\nline2"`). This causes literal `\n` rendering and can break backticks/code spans via shell substitution.
+- Always write PR bodies and long comments to a file, then use file-based flags:
+  - `gh pr create --body-file /tmp/pr_body.md`
+  - `gh pr edit <number> --body-file /tmp/pr_body.md`
+  - `gh issue comment <number> --body-file /tmp/comment.md`
+  - `gh api -X PATCH repos/<owner>/<repo>/issues/comments/<id> -F body=@/tmp/comment.md`
+- When generating files from shell, use a single-quoted heredoc (`<<'EOF'`) so backticks and `$` are preserved as literal Markdown.
+- After creating/updating a PR body or comment, verify formatting by fetching the rendered text and checking for literal `\n`. If found, immediately rewrite from a file-based body.
+
 --- 
 
 ## Learnings
