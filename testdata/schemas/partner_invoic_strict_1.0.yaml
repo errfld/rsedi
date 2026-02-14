@@ -1,0 +1,35 @@
+# Partner strict INVOIC schema profile
+# Demonstrates stricter DTM modeling while inheriting baseline segment coverage.
+
+name: "partner_invoic_strict"
+version: "1.0"
+parent:
+  name: "EANCOM_INVOIC"
+  version: "D96A"
+
+segments:
+  - tag: DTM
+    is_mandatory: true
+    max_repetitions: 10
+    elements:
+      # The runtime currently materializes DTM composite content in e1.
+      # This profile reserves explicit conceptual fields for qualifier/value/format
+      # so partner-level mapping layers can split and validate them downstream.
+      - id: "e1"
+        name: "date_time_qualifier"
+        data_type: "an"
+        is_mandatory: true
+        min_length: 1
+        max_length: 3
+      - id: "e2"
+        name: "date_time_value"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+      - id: "e3"
+        name: "date_time_format"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 3

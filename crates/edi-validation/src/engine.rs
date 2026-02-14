@@ -703,7 +703,20 @@ impl ValidationEngine {
 
                 // Merge segment results
                 for issue in segment_result.report.all_issues() {
-                    result.add_issue(issue.clone());
+                    let mut issue = issue.clone();
+
+                    if issue.segment_pos.is_none() {
+                        issue.segment_pos = Some(idx);
+                    }
+
+                    if issue.path.starts_with(&segment.name) {
+                        let suffix = issue.path.strip_prefix(&segment.name).unwrap_or_default();
+                        issue.path = format!("{}{}", segment_context.path, suffix);
+                    } else if issue.path.is_empty() {
+                        issue.path.clone_from(&segment_context.path);
+                    }
+
+                    result.add_issue(issue);
                 }
                 if self.should_stop(result) {
                     return Ok(());
@@ -929,9 +942,17 @@ impl ValidationEngine {
     ) {
         let severity = self.config.strictness.effective_severity(Severity::Error);
 
-        let issue = ValidationIssue::new(severity, message)
+        let mut issue = ValidationIssue::new(severity, message)
             .with_path(&context.path)
             .with_code(code);
+
+        if let Some(segment_pos) = context.segment_pos {
+            issue = issue.with_positions(segment_pos, context.element_pos, context.component_pos);
+        }
+
+        if let Some(line) = context.line {
+            issue = issue.with_position(line, 1);
+        }
 
         result.add_issue(issue);
 
@@ -950,9 +971,17 @@ impl ValidationEngine {
     ) {
         let severity = self.config.strictness.effective_severity(Severity::Warning);
 
-        let issue = ValidationIssue::new(severity, message)
+        let mut issue = ValidationIssue::new(severity, message)
             .with_path(&context.path)
             .with_code(code);
+
+        if let Some(segment_pos) = context.segment_pos {
+            issue = issue.with_positions(segment_pos, context.element_pos, context.component_pos);
+        }
+
+        if let Some(line) = context.line {
+            issue = issue.with_position(line, 1);
+        }
 
         result.add_issue(issue);
 

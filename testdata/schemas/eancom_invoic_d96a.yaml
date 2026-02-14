@@ -30,14 +30,14 @@ segments:
       - id: "e1"
         name: "document_name"
         data_type: "an"
-        is_mandatory: false
-        min_length: 0
+        is_mandatory: true
+        min_length: 1
         max_length: 35
       - id: "e2"
         name: "invoice_number"
         data_type: "an"
-        is_mandatory: false
-        min_length: 0
+        is_mandatory: true
+        min_length: 1
         max_length: 35
       - id: "e3"
         name: "message_function"
@@ -50,8 +50,9 @@ segments:
     is_mandatory: true
     max_repetitions: 10
     elements:
+      # Baseline keeps the EDIFACT composite packed in e1 as qualifier:value:format.
       - id: "e1"
-        name: "date_time_period"
+        name: "date_time_period_composite"
         data_type: "an"
         is_mandatory: false
         min_length: 0
@@ -75,8 +76,8 @@ segments:
       - id: "e1"
         name: "party_qualifier"
         data_type: "an"
-        is_mandatory: false
-        min_length: 0
+        is_mandatory: true
+        min_length: 1
         max_length: 3
       - id: "e2"
         name: "party_identification"
@@ -103,8 +104,8 @@ segments:
       - id: "e1"
         name: "line_item_number"
         data_type: "n"
-        is_mandatory: false
-        min_length: 0
+        is_mandatory: true
+        min_length: 1
         max_length: 6
       - id: "e3"
         name: "item_number_identification"
@@ -164,12 +165,12 @@ segments:
       - id: "e1"
         name: "segment_count"
         data_type: "n"
-        is_mandatory: false
-        min_length: 0
+        is_mandatory: true
+        min_length: 1
         max_length: 10
       - id: "e2"
         name: "message_reference"
         data_type: "an"
-        is_mandatory: false
-        min_length: 0
+        is_mandatory: true
+        min_length: 1
         max_length: 14
