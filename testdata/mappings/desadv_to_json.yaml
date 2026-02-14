@@ -1,0 +1,26 @@
+name: desadv_to_json
+source_type: EANCOM_DESADV
+target_type: JSON_DESADV
+
+rules:
+  - type: field
+    source: /BGM/e2
+    target: despatch_advice_number
+
+  - type: field
+    source: /DTM/e1
+    target: despatch_date
+
+  - type: foreach
+    source: /LIN
+    target: lines
+    rules:
+      - type: field
+        source: e1
+        target: line_number
+      - type: field
+        source: e3
+        target: item_id
+      - type: field
+        source: QTY/e1
+        target: despatched_quantity
