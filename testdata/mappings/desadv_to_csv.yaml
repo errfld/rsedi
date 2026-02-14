@@ -4,7 +4,7 @@ target_type: CSV_DESADV
 
 rules:
   - type: foreach
-    source: /LIN[*]
+    source: /LIN
     target: rows
     rules:
       - type: field

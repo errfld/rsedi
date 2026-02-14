@@ -12,7 +12,7 @@ rules:
     target: despatch_date
 
   - type: foreach
-    source: /LIN[*]
+    source: /LIN
     target: lines
     rules:
       - type: field
