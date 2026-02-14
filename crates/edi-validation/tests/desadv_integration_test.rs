@@ -19,7 +19,7 @@ fn normalize_document_for_validation(document: &Document) -> Document {
     normalized
 }
 
-fn validate_desadv_fixture(file_name: &str) {
+fn collect_validation_error_flags(file_name: &str) -> Vec<bool> {
     let root = repo_root();
     let schema_path = root.join("testdata/schemas/eancom_desadv_d96a.yaml");
     let edi_path = root.join(format!("testdata/edi/{file_name}"));
@@ -41,21 +41,40 @@ fn validate_desadv_fixture(file_name: &str) {
     );
 
     let engine = ValidationEngine::new();
+    let mut has_errors = Vec::new();
     for document in &outcome.documents {
         let normalized = normalize_document_for_validation(document);
         let result = engine
             .validate_with_schema(&normalized, &schema)
             .expect("validation should run");
-        assert!(!result.has_errors(), "unexpected validation errors");
+        has_errors.push(result.has_errors());
     }
+    has_errors
 }
 
 #[test]
 fn desadv_minimal_fixture_validates_against_schema() {
-    validate_desadv_fixture("valid_desadv_d96a_minimal.edi");
+    let errors = collect_validation_error_flags("valid_desadv_d96a_minimal.edi");
+    assert!(
+        errors.iter().all(|flag| !*flag),
+        "unexpected validation errors"
+    );
 }
 
 #[test]
 fn desadv_full_fixture_validates_against_schema() {
-    validate_desadv_fixture("valid_desadv_d96a_full.edi");
+    let errors = collect_validation_error_flags("valid_desadv_d96a_full.edi");
+    assert!(
+        errors.iter().all(|flag| !*flag),
+        "unexpected validation errors"
+    );
+}
+
+#[test]
+fn desadv_missing_bgm_fixture_reports_validation_errors() {
+    let errors = collect_validation_error_flags("invalid_desadv_d96a_missing_bgm.edi");
+    assert!(
+        errors.iter().any(|flag| *flag),
+        "expected validation errors for missing mandatory BGM segment"
+    );
 }
