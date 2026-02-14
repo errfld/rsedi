@@ -6,9 +6,10 @@
 //! EDI transformations and managing configurations.
 
 use std::borrow::Cow;
+use std::env;
 use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
@@ -22,18 +23,54 @@ use edi_ir::Value;
 use edi_mapping::{MappingDsl, MappingRuntime};
 use edi_schema::SchemaLoader;
 use edi_validation::{Severity, ValidationEngine, ValidationIssue};
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliExitCode {
     Success = 0,
     Warnings = 1,
     Errors = 2,
+    Fatal = 3,
 }
 
 impl CliExitCode {
     fn as_exit_code(self) -> ExitCode {
         ExitCode::from(self as u8)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum ColorMode {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CliConfig {
+    progress: bool,
+    progress_threshold_bytes: u64,
+    color: ColorMode,
+}
+
+impl Default for CliConfig {
+    fn default() -> Self {
+        Self {
+            progress: true,
+            progress_threshold_bytes: 1024 * 1024,
+            color: ColorMode::Auto,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeOptions {
+    progress: bool,
+    progress_threshold_bytes: u64,
+    color: ColorMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +200,19 @@ enum Commands {
         schema: String,
     },
 
+    /// Parse an EDI file and output JSON IR
+    Parse {
+        /// Input file path
+        input: String,
+
+        /// Output file path (writes to stdout when omitted)
+        output: Option<String>,
+
+        /// Pretty-print JSON output
+        #[arg(long, default_value_t = false)]
+        pretty: bool,
+    },
+
     /// Generate EDI output from CSV/JSON input using a mapping
     Generate {
         /// Input file path (CSV or JSON)
@@ -187,37 +237,142 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code.as_exit_code(),
         Err(error) => {
-            eprintln!("Error: {error:#}");
-            CliExitCode::Errors.as_exit_code()
+            print_error(ColorMode::Auto, &format!("{error:#}"));
+            CliExitCode::Fatal.as_exit_code()
         }
     }
 }
 
 fn run() -> anyhow::Result<CliExitCode> {
     let cli = Cli::parse();
+    let config = load_cli_config(cli.config.as_deref())?;
+    let runtime = RuntimeOptions {
+        progress: config.progress,
+        progress_threshold_bytes: config.progress_threshold_bytes,
+        color: config.color,
+    };
 
     if let Some(config_path) = cli.config.as_deref() {
-        tracing::warn!(config = %config_path, "Config file support is not implemented in this MVP; argument will be ignored");
-        eprintln!(
-            "WARNING: Config file support is not implemented in this MVP; ignoring '{}'.",
-            config_path
-        );
+        tracing::info!(config = %config_path, "Loaded explicit CLI config");
     }
 
-    match cli.command {
+    let command_result = match cli.command {
         Commands::Transform {
             input,
             output,
             mapping,
             schema,
-        } => transform(&input, output.as_deref(), &mapping, schema.as_deref()),
-        Commands::Validate { input, schema } => validate(&input, &schema),
+        } => transform(
+            &input,
+            output.as_deref(),
+            &mapping,
+            schema.as_deref(),
+            runtime,
+        ),
+        Commands::Validate { input, schema } => validate(&input, &schema, runtime),
+        Commands::Parse {
+            input,
+            output,
+            pretty,
+        } => parse(&input, output.as_deref(), pretty, runtime),
         Commands::Generate {
             input,
             output,
             mapping,
             input_format,
-        } => generate(&input, output.as_deref(), &mapping, input_format),
+        } => generate(&input, output.as_deref(), &mapping, input_format, runtime),
+    };
+
+    match command_result {
+        Ok(code) => Ok(code),
+        Err(error) => {
+            print_error(runtime.color, &format!("{error:#}"));
+            Ok(CliExitCode::Errors)
+        }
+    }
+}
+
+fn load_cli_config(explicit_path: Option<&str>) -> anyhow::Result<CliConfig> {
+    if let Some(path) = explicit_path {
+        let path = PathBuf::from(path);
+        return read_cli_config_file(&path);
+    }
+
+    for path in default_config_paths() {
+        if path.exists() {
+            return read_cli_config_file(&path);
+        }
+    }
+
+    Ok(CliConfig::default())
+}
+
+fn read_cli_config_file(path: &Path) -> anyhow::Result<CliConfig> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("Failed to read CLI config '{}'", path.display()))?;
+    serde_yaml::from_slice(&bytes)
+        .with_context(|| format!("Failed to parse CLI config '{}'", path.display()))
+}
+
+fn default_config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(current_dir) = env::current_dir() {
+        paths.push(current_dir.join("edi-cli.yaml"));
+        paths.push(current_dir.join(".edi-cli.yaml"));
+    }
+
+    if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
+        paths.push(PathBuf::from(config_home).join("edi/cli.yaml"));
+    } else if let Some(appdata) = env::var_os("APPDATA") {
+        paths.push(PathBuf::from(appdata).join("edi/cli.yaml"));
+    } else if let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
+        paths.push(PathBuf::from(home).join(".config/edi/cli.yaml"));
+    }
+
+    paths
+}
+
+fn use_color(mode: ColorMode) -> bool {
+    match mode {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => std::io::stderr().is_terminal() && env::var_os("NO_COLOR").is_none(),
+    }
+}
+
+fn print_error(color_mode: ColorMode, message: &str) {
+    if use_color(color_mode) {
+        eprintln!("\x1b[31mERROR\x1b[0m: {message}");
+    } else {
+        eprintln!("ERROR: {message}");
+    }
+}
+
+fn print_warning(color_mode: ColorMode, message: &str) {
+    if use_color(color_mode) {
+        eprintln!("\x1b[33mWARNING\x1b[0m: {message}");
+    } else {
+        eprintln!("WARNING: {message}");
+    }
+}
+
+fn emit_progress(runtime: RuntimeOptions, input_path: &str, stage: &str) {
+    if !runtime.progress {
+        return;
+    }
+
+    let should_emit = std::fs::metadata(input_path)
+        .map(|metadata| metadata.len() >= runtime.progress_threshold_bytes)
+        .unwrap_or(false);
+    if !should_emit {
+        return;
+    }
+
+    if use_color(runtime.color) {
+        eprintln!("\x1b[36mPROGRESS\x1b[0m: {stage}");
+    } else {
+        eprintln!("PROGRESS: {stage}");
     }
 }
 
@@ -226,6 +381,7 @@ fn transform(
     output_path: Option<&str>,
     mapping_path: &str,
     schema_path: Option<&str>,
+    runtime: RuntimeOptions,
 ) -> anyhow::Result<CliExitCode> {
     tracing::info!(
         input = %input_path,
@@ -236,12 +392,16 @@ fn transform(
 
     if let Some(schema) = schema_path {
         tracing::warn!(schema = %schema, "Transform schema argument is not implemented in this MVP and will be ignored");
-        eprintln!(
-            "WARNING: Transform schema argument is not implemented in this MVP; ignoring '{}'.",
-            schema
+        print_warning(
+            runtime.color,
+            &format!(
+                "Transform schema argument is not implemented in this MVP; ignoring '{}'.",
+                schema
+            ),
         );
     }
 
+    emit_progress(runtime, input_path, "reading EDIFACT input");
     let input_bytes = std::fs::read(input_path)
         .with_context(|| format!("Failed to read input file '{}'", input_path))?;
 
@@ -259,24 +419,27 @@ fn transform(
     let output_format = TransformOutputFormat::from_target_type(&mapping.target_type)
         .with_context(|| format!("Mapping '{}' has invalid target_type", mapping_path))?;
 
-    let mut runtime = MappingRuntime::new();
+    let mut mapping_runtime = MappingRuntime::new();
     let mut mapped_documents = Vec::with_capacity(parsed.documents.len());
 
     for (index, document) in parsed.documents.iter().enumerate() {
-        let mapped = runtime.execute(&mapping, document).with_context(|| {
-            format!(
-                "Failed to apply mapping '{}' to message {}",
-                mapping_path,
-                index + 1
-            )
-        })?;
+        let mapped = mapping_runtime
+            .execute(&mapping, document)
+            .with_context(|| {
+                format!(
+                    "Failed to apply mapping '{}' to message {}",
+                    mapping_path,
+                    index + 1
+                )
+            })?;
         mapped_documents.push(mapped);
     }
 
+    emit_progress(runtime, input_path, "serializing transformed output");
     write_transformed_output(mapped_documents.as_slice(), output_format, output_path)?;
 
     for warning in &parsed.warnings {
-        eprintln!("WARNING: {}", format_parse_warning(warning, input_path));
+        print_warning(runtime.color, &format_parse_warning(warning, input_path));
     }
 
     let destination = output_path.unwrap_or("stdout");
@@ -295,11 +458,87 @@ fn transform(
     }
 }
 
+fn parse(
+    input_path: &str,
+    output_path: Option<&str>,
+    pretty: bool,
+    runtime: RuntimeOptions,
+) -> anyhow::Result<CliExitCode> {
+    tracing::info!(
+        input = %input_path,
+        output = output_path.unwrap_or("stdout"),
+        pretty,
+        "Starting parse command"
+    );
+
+    emit_progress(runtime, input_path, "reading EDIFACT input");
+    let input_bytes = std::fs::read(input_path)
+        .with_context(|| format!("Failed to read input file '{}'", input_path))?;
+
+    let parser = EdifactParser::new();
+    let parsed = parser
+        .parse_with_warnings(&input_bytes, input_path)
+        .with_context(|| format!("Failed to parse EDIFACT input '{}'", input_path))?;
+
+    if parsed.documents.is_empty() {
+        print_error(
+            runtime.color,
+            &format!("No EDIFACT messages were found in '{}'", input_path),
+        );
+        return Ok(CliExitCode::Errors);
+    }
+
+    match output_path {
+        Some(path) => {
+            let output_file =
+                File::create(path).with_context(|| format!("Failed to create '{}'", path))?;
+            if pretty {
+                serde_json::to_writer_pretty(output_file, &parsed.documents)
+                    .with_context(|| format!("Failed to write parsed JSON to '{}'", path))?;
+            } else {
+                serde_json::to_writer(output_file, &parsed.documents)
+                    .with_context(|| format!("Failed to write parsed JSON to '{}'", path))?;
+            }
+        }
+        None => {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            if pretty {
+                serde_json::to_writer_pretty(&mut handle, &parsed.documents)
+                    .context("Failed to write parsed JSON to stdout")?;
+            } else {
+                serde_json::to_writer(&mut handle, &parsed.documents)
+                    .context("Failed to write parsed JSON to stdout")?;
+            }
+            handle
+                .write_all(b"\n")
+                .context("Failed to finalize parse output on stdout")?;
+        }
+    }
+
+    for warning in &parsed.warnings {
+        print_warning(runtime.color, &format_parse_warning(warning, input_path));
+    }
+
+    eprintln!(
+        "Parse summary: messages={}, warnings={}",
+        parsed.documents.len(),
+        parsed.warnings.len()
+    );
+
+    if parsed.warnings.is_empty() {
+        Ok(CliExitCode::Success)
+    } else {
+        Ok(CliExitCode::Warnings)
+    }
+}
+
 fn generate(
     input_path: &str,
     output_path: Option<&str>,
     mapping_path: &str,
     input_format: Option<GenerateInputFormat>,
+    runtime: RuntimeOptions,
 ) -> anyhow::Result<CliExitCode> {
     tracing::info!(
         input = %input_path,
@@ -309,6 +548,7 @@ fn generate(
         "Starting generate command"
     );
 
+    emit_progress(runtime, input_path, "loading mapping and source document");
     let mapping = MappingDsl::parse_file(Path::new(mapping_path))
         .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
     let resolved_input_format =
@@ -332,16 +572,20 @@ fn generate(
     let output_format = TransformOutputFormat::from_target_type(&mapping.target_type)
         .with_context(|| format!("Mapping '{}' has invalid target_type", mapping_path))?;
     if output_format != TransformOutputFormat::Edi {
-        bail!(
-            "Generate mapping '{}' must target EDI output, but target_type '{}' resolves to {}",
-            mapping_path,
-            mapping.target_type,
-            output_format.as_str()
+        print_error(
+            runtime.color,
+            &format!(
+                "Generate mapping '{}' must target EDI output, but target_type '{}' resolves to {}",
+                mapping_path,
+                mapping.target_type,
+                output_format.as_str()
+            ),
         );
+        return Ok(CliExitCode::Errors);
     }
 
-    let mut runtime = MappingRuntime::new();
-    let mapped_document = runtime
+    let mut mapping_runtime = MappingRuntime::new();
+    let mapped_document = mapping_runtime
         .execute(&mapping, &source_document)
         .with_context(|| {
             format!(
@@ -350,6 +594,7 @@ fn generate(
             )
         })?;
 
+    emit_progress(runtime, input_path, "writing generated EDI output");
     write_transformed_output(
         std::slice::from_ref(&mapped_document),
         TransformOutputFormat::Edi,
@@ -669,9 +914,14 @@ fn csv_records_from_document(document: &Document) -> &[edi_ir::Node] {
     }
 }
 
-fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> {
+fn validate(
+    input_path: &str,
+    schema_path: &str,
+    runtime: RuntimeOptions,
+) -> anyhow::Result<CliExitCode> {
     tracing::info!(input = %input_path, schema = %schema_path, "Starting validate command");
 
+    emit_progress(runtime, input_path, "reading EDIFACT input");
     let input_bytes = std::fs::read(input_path)
         .with_context(|| format!("Failed to read input file '{}'", input_path))?;
 
@@ -681,9 +931,12 @@ fn validate(input_path: &str, schema_path: &str) -> anyhow::Result<CliExitCode> 
         .with_context(|| format!("Failed to parse EDIFACT input '{}'", input_path))?;
 
     if parsed.documents.is_empty() {
-        eprintln!(
-            "Validation summary: no EDIFACT messages found in '{}'",
-            input_path
+        print_error(
+            runtime.color,
+            &format!(
+                "Validation summary: no EDIFACT messages found in '{}'",
+                input_path
+            ),
         );
         return Ok(CliExitCode::Errors);
     }
