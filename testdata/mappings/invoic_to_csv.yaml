@@ -1,0 +1,27 @@
+name: invoic_to_csv
+source_type: EANCOM_INVOIC
+target_type: CSV_INVOIC
+
+rules:
+  - type: foreach
+    source: /LIN[*]
+    target: rows
+    rules:
+      - type: field
+        source: /BGM/e2
+        target: invoice_number
+      - type: field
+        source: e1
+        target: line_number
+      - type: field
+        source: e3
+        target: item_id
+      - type: field
+        source: QTY/e1
+        target: invoiced_quantity
+      - type: field
+        source: PRI/e1
+        target: unit_price
+      - type: field
+        source: MOA/e1
+        target: line_amount
