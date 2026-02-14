@@ -1,0 +1,21 @@
+name: desadv_to_csv
+source_type: EANCOM_DESADV
+target_type: CSV_DESADV
+
+rules:
+  - type: foreach
+    source: /LIN[*]
+    target: rows
+    rules:
+      - type: field
+        source: /BGM/e2
+        target: despatch_advice_number
+      - type: field
+        source: e1
+        target: line_number
+      - type: field
+        source: e3
+        target: item_id
+      - type: field
+        source: QTY/e1
+        target: despatched_quantity
