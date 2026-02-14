@@ -69,7 +69,7 @@ impl<'a> Cursor<'a> {
                     path: new_path,
                 })
             }
-            None => Err(Error::NodeNotFound(format!(
+            None => Err(Error::node_not_found(format!(
                 "{}/{}",
                 self.path.join("/"),
                 name
@@ -92,7 +92,7 @@ impl<'a> Cursor<'a> {
                     path: new_path,
                 })
             }
-            None => Err(Error::NodeNotFound(format!(
+            None => Err(Error::node_not_found(format!(
                 "{}[{}]",
                 self.path.join("/"),
                 index
@@ -136,12 +136,18 @@ impl<'a> Cursor<'a> {
             // Handle array indexing like "ITEM[0]"
             if let Some(open_bracket) = segment.find('[') {
                 let name = &segment[..open_bracket];
-                let close_bracket = segment
-                    .find(']')
-                    .ok_or_else(|| Error::InvalidPath(format!("Unclosed bracket in: {segment}")))?;
-                let index: usize = segment[open_bracket + 1..close_bracket]
-                    .parse()
-                    .map_err(|_| Error::InvalidPath(format!("Invalid index in: {segment}")))?;
+                let close_bracket = segment.find(']').ok_or_else(|| {
+                    Error::invalid_path(path, format!("Unclosed bracket in segment '{segment}'"))
+                })?;
+                let index: usize =
+                    segment[open_bracket + 1..close_bracket]
+                        .parse()
+                        .map_err(|_| {
+                            Error::invalid_path(
+                                path,
+                                format!("Invalid index in segment '{segment}'"),
+                            )
+                        })?;
 
                 // Find children by name
                 let children: Vec<&Node> = current_node
@@ -151,12 +157,12 @@ impl<'a> Cursor<'a> {
                     .collect();
 
                 current_node = children.get(index).ok_or_else(|| {
-                    Error::NodeNotFound(format!("{}/{}", current_path.join("/"), segment))
+                    Error::node_not_found(format!("{}/{}", current_path.join("/"), segment))
                 })?;
                 current_path.push(format!("{name}[{index}]"));
             } else {
                 current_node = current_node.find_child(segment).ok_or_else(|| {
-                    Error::NodeNotFound(format!("{}/{}", current_path.join("/"), segment))
+                    Error::node_not_found(format!("{}/{}", current_path.join("/"), segment))
                 })?;
                 current_path.push(segment.to_string());
             }
@@ -231,7 +237,7 @@ mod tests {
         assert!(result.is_err());
 
         match result {
-            Err(Error::NodeNotFound(path)) => {
+            Err(Error::NodeNotFound { path }) => {
                 assert!(path.contains("ROOT"));
                 assert!(path.contains("NONEXISTENT"));
             }
@@ -264,7 +270,7 @@ mod tests {
         assert!(result.is_err());
 
         match result {
-            Err(Error::NodeNotFound(path)) => {
+            Err(Error::NodeNotFound { path }) => {
                 assert!(path.contains("[0]"));
             }
             _ => panic!("Expected NodeNotFound error"),
@@ -340,7 +346,7 @@ mod tests {
         let result = cursor.navigate("NONEXISTENT");
         assert!(result.is_err());
         match result {
-            Err(Error::NodeNotFound(_)) => (),
+            Err(Error::NodeNotFound { .. }) => (),
             _ => panic!("Expected NodeNotFound error"),
         }
     }
@@ -357,7 +363,7 @@ mod tests {
         let result = cursor.navigate("ITEM[5]");
         assert!(result.is_err());
         match result {
-            Err(Error::NodeNotFound(_)) => (),
+            Err(Error::NodeNotFound { .. }) => (),
             _ => panic!("Expected NodeNotFound error"),
         }
     }
@@ -371,7 +377,7 @@ mod tests {
         let result = cursor.navigate("ITEM[0");
         assert!(result.is_err());
         match result {
-            Err(Error::InvalidPath(_)) => (),
+            Err(Error::InvalidPath { .. }) => (),
             _ => panic!("Expected InvalidPath error"),
         }
 
@@ -379,7 +385,10 @@ mod tests {
         let result = cursor.navigate("ITEM[abc]");
         assert!(result.is_err());
         match result {
-            Err(Error::InvalidPath(_)) => (),
+            Err(Error::InvalidPath { path, reason }) => {
+                assert_eq!(path, "ITEM[abc]");
+                assert!(reason.contains("Invalid index"));
+            }
             _ => panic!("Expected InvalidPath error"),
         }
     }
