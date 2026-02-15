@@ -4,7 +4,7 @@ target_type: CSV_INVOIC
 
 rules:
   - type: foreach
-    source: /LIN[*]
+    source: /LIN
     target: rows
     rules:
       - type: field
@@ -14,14 +14,14 @@ rules:
         source: e1
         target: line_number
       - type: field
-        source: e3
+        source: e3/c1
         target: item_id
       - type: field
-        source: QTY/e1
+        source: /QTY/e1/c2
         target: invoiced_quantity
       - type: field
-        source: PRI/e1
+        source: /PRI/e1/c2
         target: unit_price
       - type: field
-        source: MOA/e1
+        source: /MOA/e1/c2
         target: line_amount

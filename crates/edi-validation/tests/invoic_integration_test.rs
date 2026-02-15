@@ -66,7 +66,7 @@ fn invoic_minimal_fixture_validates_against_schema() {
         results
             .iter()
             .all(|result| !result.has_errors() && !result.has_warnings()),
-        "unexpected validation errors"
+        "unexpected validation errors or warnings"
     );
 }
 
@@ -81,7 +81,7 @@ fn invoic_full_fixture_validates_against_schema() {
         results
             .iter()
             .all(|result| !result.has_errors() && !result.has_warnings()),
-        "unexpected validation errors"
+        "unexpected validation errors or warnings"
     );
 }
 
@@ -92,6 +92,14 @@ fn invoic_missing_bgm_fixture_reports_validation_errors() {
     assert!(
         results.iter().any(ValidationResult::has_errors),
         "expected validation errors for missing mandatory BGM segment"
+    );
+    let has_missing_segment_error = results
+        .iter()
+        .flat_map(|result| result.report.all_issues())
+        .any(|issue| issue.code.as_deref() == Some("MISSING_MANDATORY_SEGMENT"));
+    assert!(
+        has_missing_segment_error,
+        "expected MISSING_MANDATORY_SEGMENT error code"
     );
 }
 
