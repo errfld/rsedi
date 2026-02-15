@@ -19,7 +19,7 @@ fn normalize_document_for_validation(document: &Document) -> Document {
     normalized
 }
 
-fn validate_invoic_fixture(file_name: &str) -> Vec<ValidationResult> {
+fn validate_invoic_fixture(file_name: &str) -> (Vec<ValidationResult>, usize) {
     let root = repo_root();
     let schema_path = root.join("testdata/schemas/eancom_invoic_d96a.yaml");
     let edi_path = root.join(format!("testdata/edi/{file_name}"));
@@ -40,6 +40,7 @@ fn validate_invoic_fixture(file_name: &str) -> Vec<ValidationResult> {
         "expected at least one message"
     );
 
+    let parse_warning_count = outcome.warnings.len();
     let engine = ValidationEngine::new();
     let mut results = Vec::new();
 
@@ -51,30 +52,43 @@ fn validate_invoic_fixture(file_name: &str) -> Vec<ValidationResult> {
         results.push(result);
     }
 
-    results
+    (results, parse_warning_count)
 }
 
 #[test]
 fn invoic_minimal_fixture_validates_against_schema() {
-    let results = validate_invoic_fixture("valid_invoic_d96a_minimal.edi");
+    let (results, parse_warning_count) = validate_invoic_fixture("valid_invoic_d96a_minimal.edi");
+    assert_eq!(
+        parse_warning_count, 0,
+        "unexpected parse warnings for valid INVOIC minimal fixture"
+    );
     assert!(
-        results.iter().all(|result| !result.has_errors()),
+        results
+            .iter()
+            .all(|result| !result.has_errors() && !result.has_warnings()),
         "unexpected validation errors"
     );
 }
 
 #[test]
 fn invoic_full_fixture_validates_against_schema() {
-    let results = validate_invoic_fixture("valid_invoic_d96a_full.edi");
+    let (results, parse_warning_count) = validate_invoic_fixture("valid_invoic_d96a_full.edi");
+    assert_eq!(
+        parse_warning_count, 0,
+        "unexpected parse warnings for valid INVOIC full fixture"
+    );
     assert!(
-        results.iter().all(|result| !result.has_errors()),
+        results
+            .iter()
+            .all(|result| !result.has_errors() && !result.has_warnings()),
         "unexpected validation errors"
     );
 }
 
 #[test]
 fn invoic_missing_bgm_fixture_reports_validation_errors() {
-    let results = validate_invoic_fixture("invalid_invoic_d96a_missing_bgm.edi");
+    let (results, _parse_warning_count) =
+        validate_invoic_fixture("invalid_invoic_d96a_missing_bgm.edi");
     assert!(
         results.iter().any(ValidationResult::has_errors),
         "expected validation errors for missing mandatory BGM segment"
@@ -83,7 +97,8 @@ fn invoic_missing_bgm_fixture_reports_validation_errors() {
 
 #[test]
 fn invoic_invalid_fixture_reports_structured_diagnostics() {
-    let results = validate_invoic_fixture("invalid_invoic_d96a_missing_element.edi");
+    let (results, _parse_warning_count) =
+        validate_invoic_fixture("invalid_invoic_d96a_missing_element.edi");
     assert!(
         results.iter().any(ValidationResult::has_errors),
         "expected validation errors for missing mandatory element"
