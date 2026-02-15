@@ -1,0 +1,30 @@
+name: invoic_to_db
+source_type: EANCOM_INVOIC
+target_type: DB_INVOIC
+
+rules:
+  - type: field
+    source: /BGM/e2
+    target: invoice_header.invoice_number
+  - type: field
+    source: /DTM/e1
+    target: invoice_header.invoice_date
+  - type: foreach
+    source: /LIN[*]
+    target: invoice_lines
+    rules:
+      - type: field
+        source: e1
+        target: line_number
+      - type: field
+        source: e3
+        target: item_identifier
+      - type: field
+        source: QTY/e1
+        target: quantity
+      - type: field
+        source: PRI/e1
+        target: unit_price
+      - type: field
+        source: MOA/e1
+        target: amount
