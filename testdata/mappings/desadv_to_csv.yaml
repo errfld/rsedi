@@ -14,8 +14,8 @@ rules:
         source: e1
         target: line_number
       - type: field
-        source: e3
+        source: e3/c1
         target: item_id
       - type: field
-        source: QTY/e1
+        source: /QTY/e1/c2
         target: despatched_quantity
