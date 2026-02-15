@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use edi_adapter_edifact::EdifactParser;
 use edi_ir::{Document, NodeType};
 use edi_schema::SchemaLoader;
-use edi_validation::ValidationEngine;
+use edi_validation::{ValidationEngine, ValidationResult};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -19,7 +19,7 @@ fn normalize_document_for_validation(document: &Document) -> Document {
     normalized
 }
 
-fn collect_validation_error_flags(file_name: &str) -> Vec<bool> {
+fn validate_desadv_fixture(file_name: &str) -> (Vec<ValidationResult>, usize) {
     let root = repo_root();
     let schema_path = root.join("testdata/schemas/eancom_desadv_d96a.yaml");
     let edi_path = root.join(format!("testdata/edi/{file_name}"));
@@ -40,41 +40,55 @@ fn collect_validation_error_flags(file_name: &str) -> Vec<bool> {
         "expected at least one message"
     );
 
+    let parse_warning_count = outcome.warnings.len();
     let engine = ValidationEngine::new();
-    let mut has_errors = Vec::new();
+    let mut results = Vec::new();
     for document in &outcome.documents {
         let normalized = normalize_document_for_validation(document);
         let result = engine
             .validate_with_schema(&normalized, &schema)
             .expect("validation should run");
-        has_errors.push(result.has_errors());
+        results.push(result);
     }
-    has_errors
+    (results, parse_warning_count)
 }
 
 #[test]
 fn desadv_minimal_fixture_validates_against_schema() {
-    let errors = collect_validation_error_flags("valid_desadv_d96a_minimal.edi");
+    let (results, parse_warning_count) = validate_desadv_fixture("valid_desadv_d96a_minimal.edi");
+    assert_eq!(
+        parse_warning_count, 0,
+        "unexpected parse warnings for valid DESADV minimal fixture"
+    );
     assert!(
-        errors.iter().all(|flag| !*flag),
+        results
+            .iter()
+            .all(|result| !result.has_errors() && !result.has_warnings()),
         "unexpected validation errors"
     );
 }
 
 #[test]
 fn desadv_full_fixture_validates_against_schema() {
-    let errors = collect_validation_error_flags("valid_desadv_d96a_full.edi");
+    let (results, parse_warning_count) = validate_desadv_fixture("valid_desadv_d96a_full.edi");
+    assert_eq!(
+        parse_warning_count, 0,
+        "unexpected parse warnings for valid DESADV full fixture"
+    );
     assert!(
-        errors.iter().all(|flag| !*flag),
+        results
+            .iter()
+            .all(|result| !result.has_errors() && !result.has_warnings()),
         "unexpected validation errors"
     );
 }
 
 #[test]
 fn desadv_missing_bgm_fixture_reports_validation_errors() {
-    let errors = collect_validation_error_flags("invalid_desadv_d96a_missing_bgm.edi");
+    let (results, _parse_warning_count) =
+        validate_desadv_fixture("invalid_desadv_d96a_missing_bgm.edi");
     assert!(
-        errors.iter().any(|flag| *flag),
+        results.iter().any(ValidationResult::has_errors),
         "expected validation errors for missing mandatory BGM segment"
     );
 }
