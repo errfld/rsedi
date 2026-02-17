@@ -1,0 +1,24 @@
+name: slsrpt_to_csv
+source_type: EANCOM_SLSRPT
+target_type: CSV_SLSRPT
+
+rules:
+  - type: foreach
+    source: /LIN
+    target: rows
+    rules:
+      - type: field
+        source: /BGM/e2
+        target: report_number
+      - type: field
+        source: e1
+        target: line_number
+      - type: field
+        source: e3/c1
+        target: item_id
+      - type: field
+        source: /QTY/e1/c2
+        target: quantity
+      - type: field
+        source: /MOA/e1/c2
+        target: line_amount
