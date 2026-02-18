@@ -17,8 +17,8 @@ rules:
         source: LIN/e3/c1
         target: item_id
       - type: field
-        source: QTY/e1/c2
+        source: QTY[c1='153']/e1/c2
         target: quantity
       - type: field
-        source: MOA/e1/c2
+        source: MOA[c1='203']/e1/c2
         target: line_amount

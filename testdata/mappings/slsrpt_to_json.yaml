@@ -8,7 +8,7 @@ rules:
     target: report_number
 
   - type: field
-    source: /DTM/e1/c2
+    source: /DTM[c1='137']/e1/c2
     target: report_date
 
   - type: foreach
@@ -22,8 +22,8 @@ rules:
         source: LIN/e3/c1
         target: item_id
       - type: field
-        source: QTY/e1/c2
+        source: QTY[c1='153']/e1/c2
         target: reported_quantity
       - type: field
-        source: MOA/e1/c2
+        source: MOA[c1='203']/e1/c2
         target: line_amount
