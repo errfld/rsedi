@@ -4,21 +4,21 @@ target_type: CSV_SLSRPT
 
 rules:
   - type: foreach
-    source: /LIN
+    source: LINE_ITEM
     target: rows
     rules:
       - type: field
         source: /BGM/e2
         target: report_number
       - type: field
-        source: e1
+        source: LIN/e1
         target: line_number
       - type: field
-        source: e3
+        source: LIN/e3/c1
         target: item_id
       - type: field
-        source: QTY/e1
+        source: QTY/e1/c2
         target: quantity
       - type: field
-        source: MOA/e1
+        source: MOA/e1/c2
         target: line_amount
