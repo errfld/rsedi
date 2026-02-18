@@ -17,8 +17,8 @@ rules:
         source: LIN/e3/c1
         target: item_id
       - type: field
-        source: QTY/e1/c2
+        source: QTY[c1='21']/e1/c2
         target: confirmed_quantity
       - type: field
-        source: PRI/e1/c2
+        source: PRI[c1='AAA']/e1/c2
         target: unit_price
