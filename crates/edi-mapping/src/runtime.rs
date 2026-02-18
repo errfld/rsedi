@@ -91,6 +91,9 @@ impl MappingContext {
 }
 
 impl MappingRuntime {
+    const INVALID_SELECTOR_KEY: &str = "__invalid_selector_key__";
+    const INVALID_SELECTOR_VALUE: &str = "__invalid_selector_value__";
+
     /// Create a new mapping runtime
     #[must_use]
     pub fn new() -> Self {
@@ -343,7 +346,8 @@ impl MappingRuntime {
             let (component_name, selector) = Self::parse_component(component);
             if i == components.len() - 1 {
                 // Last component - return value
-                if let Some(child) = Self::find_first_matching_child(current, component_name, selector)
+                if let Some(child) =
+                    Self::find_first_matching_child(current, component_name, selector)
                 {
                     return Ok(child.value.clone().unwrap_or(Value::Null));
                 }
@@ -400,7 +404,10 @@ impl MappingRuntime {
 
         let component_name = &component[..selector_start];
         let selector_content = &component[selector_start + 1..component.len() - 1];
-        let selector = Self::parse_selector(selector_content);
+        let selector = Self::parse_selector(selector_content).or(Some((
+            Self::INVALID_SELECTOR_KEY,
+            Self::INVALID_SELECTOR_VALUE,
+        )));
         (component_name, selector)
     }
 
@@ -448,6 +455,9 @@ impl MappingRuntime {
         let Some((key, expected)) = selector else {
             return true;
         };
+        if key == Self::INVALID_SELECTOR_KEY {
+            return false;
+        }
 
         Self::selector_value(node, key).is_some_and(|actual| actual == expected)
     }
@@ -474,19 +484,18 @@ impl MappingRuntime {
         }
 
         if normalized.starts_with('e') {
-            if let Some(value) = node
-                .find_child(normalized)
-                .and_then(|element| element.value.as_ref())
-                .and_then(Value::as_string)
-            {
-                return Some(value);
-            }
             return node
                 .find_child(normalized)
-                .and_then(Self::qualifier_component_value);
+                .and_then(|element| element.value.as_ref())
+                .and_then(Value::as_string);
         }
 
         // Common EDI qualifier code selectors (e.g. 2005, 6063, 5025) map to e1/c1.
+        tracing::debug!(
+            selector_key = normalized,
+            selector_node = node.name.as_str(),
+            "unexpected selector key pattern; defaulting to e1/c1 qualifier lookup"
+        );
         Self::qualifier_component_value(node)
     }
 
@@ -960,6 +969,81 @@ rules:
             mapped.children[1].value,
             Some(Value::String("80".to_string()))
         );
+    }
+
+    #[test]
+    fn test_selector_no_match_falls_back_to_null() {
+        let dsl = r"
+name: selector_no_match_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /DTM[c1='999']/e1/c2
+    target: response_date
+";
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut dtm_137 = Node::new("DTM", NodeType::Segment);
+        let mut dtm_137_e1 = Node::new("e1", NodeType::Element);
+        dtm_137_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("137".to_string()),
+        ));
+        dtm_137_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260115".to_string()),
+        ));
+        dtm_137.add_child(dtm_137_e1);
+        root.add_child(dtm_137);
+
+        let document = Document::new(root);
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.name, "response_date");
+        assert_eq!(mapped.value, Some(Value::Null));
+    }
+
+    #[test]
+    fn test_selector_empty_or_malformed_selector_graceful() {
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut dtm_137 = Node::new("DTM", NodeType::Segment);
+        let mut dtm_137_e1 = Node::new("e1", NodeType::Element);
+        dtm_137_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("137".to_string()),
+        ));
+        dtm_137_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260115".to_string()),
+        ));
+        dtm_137.add_child(dtm_137_e1);
+        root.add_child(dtm_137);
+        let document = Document::new(root);
+
+        for source in ["/DTM[]/e1/c2", "/DTM[=]/e1/c2"] {
+            let dsl = format!(
+                "name: selector_malformed_test\nsource_type: TEST\ntarget_type: OUTPUT\nrules:\n  - type: field\n    source: {source}\n    target: response_date\n"
+            );
+            let mapping = MappingDsl::parse(&dsl).unwrap();
+            let mut runtime = MappingRuntime::new();
+            let result = runtime.execute(&mapping, &document).unwrap();
+            let mapped = first_mapped_node(&result);
+            assert_eq!(
+                mapped.value,
+                Some(Value::Null),
+                "malformed selector {source} should degrade to null without panicking"
+            );
+        }
     }
 
     #[test]

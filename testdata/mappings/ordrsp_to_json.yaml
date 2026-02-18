@@ -8,6 +8,10 @@ rules:
     target: response_number
 
   - type: field
+    # response_date uses parser-produced composite children. This path assumes
+    # EDIFACT parsing always decomposes DTM/e1 into c1/c2/c3 regardless of
+    # schema scalar typing; changing that parser behavior would break
+    # /DTM[c1='137']/e1/c2 resolution.
     source: /DTM[c1='137']/e1/c2
     target: response_date
 
