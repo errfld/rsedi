@@ -8,22 +8,22 @@ rules:
     target: response_number
 
   - type: field
-    source: /DTM/e1
+    source: /DTM/e1/c2
     target: response_date
 
   - type: foreach
-    source: /LIN
+    source: LINE_ITEM
     target: lines
     rules:
       - type: field
-        source: e1
+        source: LIN/e1
         target: line_number
       - type: field
-        source: e3
+        source: LIN/e3/c1
         target: item_id
       - type: field
-        source: QTY/e1
+        source: QTY/e1/c2
         target: confirmed_quantity
       - type: field
-        source: PRI/e1
+        source: PRI/e1/c2
         target: unit_price

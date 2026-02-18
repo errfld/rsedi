@@ -480,7 +480,7 @@ impl EdifactParser {
         // Build document root
         let mut root = Node::new("MESSAGE", NodeType::Message);
 
-        let children = if message_type.as_deref() == Some("ORDERS") {
+        let children = if matches!(message_type.as_deref(), Some("ORDERS" | "ORDRSP")) {
             Self::group_orders(message_segments)
         } else {
             message_segments
@@ -707,6 +707,53 @@ UNT+7+1'";
 
         assert!(matches!(first_group_first_child, Some(child) if child.name == "LIN"));
         assert!(matches!(second_group_first_child, Some(child) if child.name == "LIN"));
+    }
+
+    #[test]
+    fn test_ordrsp_grouping_with_multiple_lin_loops() {
+        let data = b"UNH+1+ORDRSP:D:96A:UN'\
+BGM+231+ORDRSP001+29'\
+LIN+1++4006381333931:EN'\
+QTY+21:100:PCE'\
+PRI+AAA:2.99'\
+LIN+2++4006381333948:EN'\
+QTY+21:75:PCE'\
+PRI+AAA:1.49'\
+UNT+9+1'";
+
+        let parser = EdifactParser::new();
+        let docs = parser.parse(data, "test").unwrap();
+
+        assert_eq!(docs.len(), 1);
+        let root = &docs[0].root;
+
+        let group_nodes: Vec<&Node> = root
+            .children
+            .iter()
+            .filter(|node| node.node_type == NodeType::SegmentGroup)
+            .collect();
+
+        assert_eq!(group_nodes.len(), 2);
+        assert_eq!(group_nodes[0].name, "LINE_ITEM");
+        assert_eq!(group_nodes[1].name, "LINE_ITEM");
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "PRI")
+        );
     }
 
     #[test]
