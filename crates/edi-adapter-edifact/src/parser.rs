@@ -480,8 +480,8 @@ impl EdifactParser {
         // Build document root
         let mut root = Node::new("MESSAGE", NodeType::Message);
 
-        let children = if matches!(message_type.as_deref(), Some("ORDERS" | "ORDRSP")) {
-            Self::group_orders(message_segments)
+        let children = if Self::needs_line_item_grouping(message_type.as_deref()) {
+            Self::group_line_items(message_segments)
         } else {
             message_segments
                 .iter()
@@ -503,6 +503,11 @@ impl EdifactParser {
         }
 
         Some(Document::with_metadata(root, metadata))
+    }
+
+    fn needs_line_item_grouping(message_type: Option<&str>) -> bool {
+        const LINE_ITEM_MESSAGE_TYPES: &[&str] = &["ORDERS", "ORDRSP"];
+        matches!(message_type, Some(message_type) if LINE_ITEM_MESSAGE_TYPES.contains(&message_type))
     }
 
     fn message_info(segments: &[Segment]) -> (Option<String>, Option<String>, Option<String>) {
@@ -539,7 +544,7 @@ impl EdifactParser {
         (message_type, version, message_ref)
     }
 
-    fn group_orders(segments: &[Segment]) -> Vec<Node> {
+    fn group_line_items(segments: &[Segment]) -> Vec<Node> {
         let mut children = Vec::new();
         let mut current_group: Option<Node> = None;
 
@@ -725,6 +730,7 @@ UNT+9+1'";
         let docs = parser.parse(data, "test").unwrap();
 
         assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].metadata.doc_type, Some("ORDRSP".to_string()));
         let root = &docs[0].root;
 
         let group_nodes: Vec<&Node> = root
@@ -750,6 +756,24 @@ UNT+9+1'";
         );
         assert!(
             group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "PRI")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[1]
                 .children
                 .iter()
                 .any(|child| child.name == "PRI")
