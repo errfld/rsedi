@@ -14,11 +14,11 @@ rules:
         source: e1
         target: line_number
       - type: field
-        source: e3/c1
+        source: e3
         target: item_id
       - type: field
-        source: /QTY/e1/c2
+        source: QTY/e1
         target: quantity
       - type: field
-        source: /MOA/e1/c2
+        source: MOA/e1
         target: line_amount
