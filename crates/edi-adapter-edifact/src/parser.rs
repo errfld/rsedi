@@ -480,7 +480,7 @@ impl EdifactParser {
         // Build document root
         let mut root = Node::new("MESSAGE", NodeType::Message);
 
-        let children = if matches!(message_type.as_deref(), Some("ORDERS" | "SLSRPT")) {
+        let children = if Self::needs_line_item_grouping(message_type.as_deref()) {
             Self::group_line_items(message_segments)
         } else {
             message_segments
@@ -503,6 +503,11 @@ impl EdifactParser {
         }
 
         Some(Document::with_metadata(root, metadata))
+    }
+
+    fn needs_line_item_grouping(message_type: Option<&str>) -> bool {
+        const LINE_ITEM_MESSAGE_TYPES: &[&str] = &["ORDERS", "SLSRPT"];
+        matches!(message_type, Some(message_type) if LINE_ITEM_MESSAGE_TYPES.contains(&message_type))
     }
 
     fn message_info(segments: &[Segment]) -> (Option<String>, Option<String>, Option<String>) {
@@ -750,6 +755,24 @@ UNT+9+1'";
         );
         assert!(
             group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "MOA")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[1]
                 .children
                 .iter()
                 .any(|child| child.name == "MOA")
