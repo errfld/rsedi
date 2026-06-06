@@ -84,7 +84,9 @@ fn parse_command_outputs_json_to_stdout() {
         .as_array()
         .expect("parse output should be a JSON array");
     assert!(
-        documents.iter().any(|document| document.get("root").is_some()),
+        documents
+            .iter()
+            .any(|document| document.get("root").is_some()),
         "at least one parsed document should include a 'root' field"
     );
 
