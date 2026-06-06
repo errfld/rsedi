@@ -480,8 +480,8 @@ impl EdifactParser {
         // Build document root
         let mut root = Node::new("MESSAGE", NodeType::Message);
 
-        let children = if message_type.as_deref() == Some("ORDERS") {
-            Self::group_orders(message_segments)
+        let children = if Self::needs_line_item_grouping(message_type.as_deref()) {
+            Self::group_line_items(message_segments)
         } else {
             message_segments
                 .iter()
@@ -503,6 +503,18 @@ impl EdifactParser {
         }
 
         Some(Document::with_metadata(root, metadata))
+    }
+
+    /// Returns `true` for message types whose LIN loops should be wrapped in
+    /// `LINE_ITEM` segment groups. Add new line-item message types to the
+    /// `LINE_ITEM_MESSAGE_TYPES` array.
+    fn needs_line_item_grouping(message_type: Option<&str>) -> bool {
+        const LINE_ITEM_MESSAGE_TYPES: &[&str] = &["ORDERS", "ORDRSP"];
+        matches!(message_type, Some(msg_type) if LINE_ITEM_MESSAGE_TYPES.contains(&msg_type))
+    }
+
+    fn is_line_item_group_boundary(tag: &str) -> bool {
+        matches!(tag, "UNS" | "CNT" | "UNT")
     }
 
     fn message_info(segments: &[Segment]) -> (Option<String>, Option<String>, Option<String>) {
@@ -539,7 +551,7 @@ impl EdifactParser {
         (message_type, version, message_ref)
     }
 
-    fn group_orders(segments: &[Segment]) -> Vec<Node> {
+    fn group_line_items(segments: &[Segment]) -> Vec<Node> {
         let mut children = Vec::new();
         let mut current_group: Option<Node> = None;
 
@@ -554,7 +566,7 @@ impl EdifactParser {
                     group.add_child(segment.to_node());
                     current_group = Some(group);
                 }
-                "UNS" | "UNT" => {
+                tag if Self::is_line_item_group_boundary(tag) => {
                     if let Some(group) = current_group.take() {
                         children.push(group);
                     }
@@ -707,6 +719,102 @@ UNT+7+1'";
 
         assert!(matches!(first_group_first_child, Some(child) if child.name == "LIN"));
         assert!(matches!(second_group_first_child, Some(child) if child.name == "LIN"));
+    }
+
+    #[test]
+    fn test_ordrsp_grouping_with_multiple_lin_loops() {
+        let data = b"UNH+1+ORDRSP:D:96A:UN'\
+BGM+231+ORDRSP001+29'\
+LIN+1++4006381333931:EN'\
+QTY+21:100:PCE'\
+PRI+AAA:2.99'\
+LIN+2++4006381333948:EN'\
+QTY+21:75:PCE'\
+PRI+AAA:1.49'\
+UNT+9+1'";
+
+        let parser = EdifactParser::new();
+        let docs = parser.parse(data, "test").unwrap();
+
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].metadata.doc_type, Some("ORDRSP".to_string()));
+        let root = &docs[0].root;
+
+        let group_nodes: Vec<&Node> = root
+            .children
+            .iter()
+            .filter(|node| node.node_type == NodeType::SegmentGroup)
+            .collect();
+
+        assert_eq!(group_nodes.len(), 2);
+        assert_eq!(group_nodes[0].name, "LINE_ITEM");
+        assert_eq!(group_nodes[1].name, "LINE_ITEM");
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "PRI")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "PRI")
+        );
+    }
+
+    #[test]
+    fn test_ordrsp_grouping_keeps_cnt_outside_last_line_item() {
+        let data = b"UNH+1+ORDRSP:D:96A:UN'\
+BGM+231+ORDRSP001+29'\
+LIN+1++4006381333931:EN'\
+QTY+21:100:PCE'\
+PRI+AAA:2.99'\
+CNT+2:1'\
+UNT+7+1'";
+
+        let parser = EdifactParser::new();
+        let docs = parser.parse(data, "test").unwrap();
+        let root = &docs[0].root;
+
+        let line_group = root
+            .children
+            .iter()
+            .find(|node| node.name == "LINE_ITEM")
+            .expect("expected LINE_ITEM group");
+
+        assert!(
+            !line_group.children.iter().any(|child| child.name == "CNT"),
+            "summary CNT must not be nested into LINE_ITEM"
+        );
+        assert!(
+            root.children.iter().any(|node| node.name == "CNT"),
+            "summary CNT should stay at message root level"
+        );
     }
 
     #[test]

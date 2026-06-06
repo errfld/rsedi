@@ -91,6 +91,8 @@ impl MappingContext {
 }
 
 impl MappingRuntime {
+    const INVALID_SELECTOR_KEY: &str = "__invalid_selector_key__";
+
     /// Create a new mapping runtime
     #[must_use]
     pub fn new() -> Self {
@@ -340,15 +342,19 @@ impl MappingRuntime {
         // Traverse path
         let mut current = node;
         for (i, component) in components.iter().enumerate() {
+            let (component_name, selector) = Self::parse_component(component);
             if i == components.len() - 1 {
                 // Last component - return value
-                if let Some(child) = current.find_child(component) {
+                if let Some(child) =
+                    Self::find_first_matching_child(current, component_name, selector)
+                {
                     return Ok(child.value.clone().unwrap_or(Value::Null));
                 }
                 return Ok(Value::Null);
             }
             // Intermediate component - traverse deeper
-            if let Some(child) = current.find_child(component) {
+            if let Some(child) = Self::find_first_matching_child(current, component_name, selector)
+            {
                 current = child;
             } else {
                 return Ok(Value::Null);
@@ -374,9 +380,10 @@ impl MappingRuntime {
         let mut current = vec![node.clone()];
 
         for component in components {
+            let (component_name, selector) = Self::parse_component(component);
             let mut next = Vec::new();
             for node in current {
-                for child in node.find_children(component) {
+                for child in Self::find_matching_children(&node, component_name, selector) {
                     next.push(child.clone());
                 }
             }
@@ -384,6 +391,158 @@ impl MappingRuntime {
         }
 
         Ok(current)
+    }
+
+    fn parse_component(component: &str) -> (&str, Option<(&str, &str)>) {
+        let Some(selector_start) = component.find('[') else {
+            return (component, None);
+        };
+        if !component.ends_with(']') || selector_start == 0 {
+            return (component, None);
+        }
+
+        let component_name = &component[..selector_start];
+        let selector_content = &component[selector_start + 1..component.len() - 1];
+        let selector =
+            Self::parse_selector(selector_content).or(Some((Self::INVALID_SELECTOR_KEY, "")));
+        (component_name, selector)
+    }
+
+    /// Parse a bracket selector expression into `(key, value)`.
+    ///
+    /// Empty keys and bare values default to `c1`, so `[='137']` and `['137']`
+    /// are accepted shorthand for `[c1='137']`. Empty or malformed selectors
+    /// return `None` so callers can treat them as invalid selectors.
+    fn parse_selector(selector: &str) -> Option<(&str, &str)> {
+        let trimmed = selector.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if let Some((key, raw_value)) = trimmed.split_once('=') {
+            let key = key.trim();
+            let value = Self::clean_selector_literal(raw_value);
+            if value.is_empty() {
+                return None;
+            }
+            let key = if key.is_empty() { "c1" } else { key };
+            if !Self::is_supported_selector_key(key) {
+                tracing::warn!(
+                    selector_key = key,
+                    "unrecognized selector key; selector will not match"
+                );
+                return Some((Self::INVALID_SELECTOR_KEY, value));
+            }
+            return Some((key, value));
+        }
+
+        Some(("c1", Self::clean_selector_literal(trimmed)))
+    }
+
+    fn clean_selector_literal(value: &str) -> &str {
+        value.trim().trim_matches('\'').trim_matches('"')
+    }
+
+    fn is_supported_selector_key(key: &str) -> bool {
+        let normalized = key.trim();
+        normalized.eq_ignore_ascii_case("c1")
+            || normalized
+                .strip_prefix(['c', 'C', 'e', 'E'])
+                .is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+                })
+            || normalized.chars().all(|c| c.is_ascii_digit())
+    }
+
+    fn find_first_matching_child<'a>(
+        node: &'a Node,
+        component_name: &str,
+        selector: Option<(&str, &str)>,
+    ) -> Option<&'a Node> {
+        node.children
+            .iter()
+            .find(|child| child.name == component_name && Self::matches_selector(child, selector))
+    }
+
+    fn find_matching_children<'a>(
+        node: &'a Node,
+        component_name: &str,
+        selector: Option<(&str, &str)>,
+    ) -> Vec<&'a Node> {
+        node.children
+            .iter()
+            .filter(|child| child.name == component_name && Self::matches_selector(child, selector))
+            .collect()
+    }
+
+    fn matches_selector(node: &Node, selector: Option<(&str, &str)>) -> bool {
+        let Some((key, expected)) = selector else {
+            return true;
+        };
+        if key == Self::INVALID_SELECTOR_KEY {
+            return false;
+        }
+
+        Self::selector_value(node, key).is_some_and(|actual| actual == expected)
+    }
+
+    fn selector_value(node: &Node, key: &str) -> Option<String> {
+        let normalized = key.trim();
+        let normalized_lower = normalized.to_ascii_lowercase();
+        if normalized_lower == "c1" {
+            return Self::qualifier_component_value(node);
+        }
+
+        if normalized_lower.starts_with('c') {
+            if let Some(value) = node
+                .find_child("e1")
+                .and_then(|element| element.find_child(&normalized_lower))
+                .and_then(|component| component.value.as_ref())
+                .and_then(Value::as_string)
+            {
+                return Some(value);
+            }
+            return node
+                .find_child(&normalized_lower)
+                .and_then(|component| component.value.as_ref())
+                .and_then(Value::as_string);
+        }
+
+        if normalized_lower.starts_with('e') {
+            return node
+                .find_child(&normalized_lower)
+                .and_then(|element| element.value.as_ref())
+                .and_then(Value::as_string);
+        }
+
+        // Common EDI qualifier code selectors (e.g. 2005, 3035, 6063) map to
+        // the segment qualifier value, but arbitrary numeric keys should fail
+        // closed instead of silently matching the first element's qualifier.
+        if normalized.chars().all(|ch| ch.is_ascii_digit()) {
+            return Self::is_supported_numeric_qualifier_key(normalized)
+                .then(|| Self::qualifier_component_value(node))
+                .flatten();
+        }
+
+        None
+    }
+
+    fn is_supported_numeric_qualifier_key(key: &str) -> bool {
+        matches!(key, "1153" | "2005" | "3035" | "5025" | "5125" | "6063")
+    }
+
+    fn qualifier_component_value(node: &Node) -> Option<String> {
+        let element = node.find_child("e1")?;
+        element
+            .value
+            .as_ref()
+            .and_then(Value::as_string)
+            .or_else(|| {
+                element
+                    .find_child("c1")
+                    .and_then(|component| component.value.as_ref())
+                    .and_then(Value::as_string)
+            })
     }
 
     /// Evaluate a condition
@@ -719,6 +878,435 @@ rules:
         let mapping2 = MappingDsl::parse(dsl2).unwrap();
         let result2 = runtime.execute(&mapping2, &document).unwrap();
         assert!(result2.root.children.is_empty()); // No output when condition not met
+    }
+
+    #[test]
+    fn test_resolve_path_with_component_selector() {
+        let dsl = r"
+name: selector_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /DTM[c1='137']/e1/c2
+    target: response_date
+";
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut dtm_356 = Node::new("DTM", NodeType::Segment);
+        let mut dtm_356_e1 = Node::new("e1", NodeType::Element);
+        dtm_356_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("356".to_string()),
+        ));
+        dtm_356_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260114".to_string()),
+        ));
+        dtm_356.add_child(dtm_356_e1);
+        root.add_child(dtm_356);
+
+        let mut dtm_137 = Node::new("DTM", NodeType::Segment);
+        let mut dtm_137_e1 = Node::new("e1", NodeType::Element);
+        dtm_137_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("137".to_string()),
+        ));
+        dtm_137_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260115".to_string()),
+        ));
+        dtm_137.add_child(dtm_137_e1);
+        root.add_child(dtm_137);
+
+        let document = Document::new(root);
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.name, "response_date");
+        assert_eq!(
+            mapped.value,
+            Some(Value::String("20260115".to_string())),
+            "selector should pick DTM qualifier 137 instead of first DTM segment"
+        );
+    }
+
+    #[test]
+    fn test_foreach_with_component_selector() {
+        let dsl = r"
+name: selector_foreach_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: foreach
+    source: LINE_ITEM
+    target: rows
+    rules:
+      - type: field
+        source: QTY[c1='153']/e1/c2
+        target: quantity
+";
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        for quantity in ["120", "80"] {
+            let mut line_item = Node::new("LINE_ITEM", NodeType::SegmentGroup);
+
+            let mut qty_ignored = Node::new("QTY", NodeType::Segment);
+            let mut qty_ignored_e1 = Node::new("e1", NodeType::Element);
+            qty_ignored_e1.add_child(Node::with_value(
+                "c1",
+                NodeType::Component,
+                Value::String("47".to_string()),
+            ));
+            qty_ignored_e1.add_child(Node::with_value(
+                "c2",
+                NodeType::Component,
+                Value::String("999".to_string()),
+            ));
+            qty_ignored.add_child(qty_ignored_e1);
+            line_item.add_child(qty_ignored);
+
+            let mut qty_target = Node::new("QTY", NodeType::Segment);
+            let mut qty_target_e1 = Node::new("e1", NodeType::Element);
+            qty_target_e1.add_child(Node::with_value(
+                "c1",
+                NodeType::Component,
+                Value::String("153".to_string()),
+            ));
+            qty_target_e1.add_child(Node::with_value(
+                "c2",
+                NodeType::Component,
+                Value::String(quantity.to_string()),
+            ));
+            qty_target.add_child(qty_target_e1);
+            line_item.add_child(qty_target);
+
+            root.add_child(line_item);
+        }
+
+        let document = Document::new(root);
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.name, "rows");
+        assert_eq!(mapped.children.len(), 2);
+        assert_eq!(
+            mapped.children[0].value,
+            Some(Value::String("120".to_string()))
+        );
+        assert_eq!(
+            mapped.children[1].value,
+            Some(Value::String("80".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_selector_no_match_falls_back_to_null() {
+        let dsl = r"
+name: selector_no_match_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /DTM[c1='999']/e1/c2
+    target: response_date
+";
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut dtm_137 = Node::new("DTM", NodeType::Segment);
+        let mut dtm_137_e1 = Node::new("e1", NodeType::Element);
+        dtm_137_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("137".to_string()),
+        ));
+        dtm_137_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260115".to_string()),
+        ));
+        dtm_137.add_child(dtm_137_e1);
+        root.add_child(dtm_137);
+
+        let document = Document::new(root);
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.name, "response_date");
+        assert_eq!(mapped.value, Some(Value::Null));
+    }
+
+    #[test]
+    fn test_selector_empty_or_malformed_selector_graceful() {
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut dtm_137 = Node::new("DTM", NodeType::Segment);
+        let mut dtm_137_e1 = Node::new("e1", NodeType::Element);
+        dtm_137_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("137".to_string()),
+        ));
+        dtm_137_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260115".to_string()),
+        ));
+        dtm_137.add_child(dtm_137_e1);
+        root.add_child(dtm_137);
+        let document = Document::new(root);
+
+        for source in ["/DTM[]/e1/c2", "/DTM[=]/e1/c2"] {
+            let dsl = format!(
+                "name: selector_malformed_test\nsource_type: TEST\ntarget_type: OUTPUT\nrules:\n  - type: field\n    source: {source}\n    target: response_date\n"
+            );
+            let mapping = MappingDsl::parse(&dsl).unwrap();
+            let mut runtime = MappingRuntime::new();
+            let result = runtime.execute(&mapping, &document).unwrap();
+            let mapped = first_mapped_node(&result);
+            assert_eq!(
+                mapped.value,
+                Some(Value::Null),
+                "malformed selector {source} should degrade to null without panicking"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unknown_numeric_selector_key_does_not_match() {
+        let dsl = r"
+name: selector_unknown_numeric_key_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /DTM[2006='137']/e1/c2
+    target: date
+";
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut dtm = Node::new("DTM", NodeType::Segment);
+        let mut dtm_e1 = Node::new("e1", NodeType::Element);
+        dtm_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("137".to_string()),
+        ));
+        dtm_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260116".to_string()),
+        ));
+        dtm.add_child(dtm_e1);
+        root.add_child(dtm);
+        let document = Document::new(root);
+
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.value, Some(Value::Null));
+    }
+
+    #[test]
+    fn test_selector_shorthand_defaults_to_c1() {
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut qty = Node::new("QTY", NodeType::Segment);
+        let mut qty_e1 = Node::new("e1", NodeType::Element);
+        qty_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("153".to_string()),
+        ));
+        qty_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("120".to_string()),
+        ));
+        qty.add_child(qty_e1);
+        root.add_child(qty);
+        let document = Document::new(root);
+
+        for source in ["/QTY['153']/e1/c2", "/QTY[='153']/e1/c2"] {
+            let dsl = format!(
+                "name: selector_shorthand_test\nsource_type: TEST\ntarget_type: OUTPUT\nrules:\n  - type: field\n    source: {source}\n    target: quantity\n"
+            );
+            let mapping = MappingDsl::parse(&dsl).unwrap();
+            let mut runtime = MappingRuntime::new();
+            let result = runtime.execute(&mapping, &document).unwrap();
+            let mapped = first_mapped_node(&result);
+            assert_eq!(mapped.value, Some(Value::String("120".to_string())));
+        }
+    }
+
+    #[test]
+    fn test_selector_c2_matches_component_value() {
+        let dsl = r"
+name: selector_c2_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /QTY[c2='120']/e1/c3
+    target: unit
+";
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut qty_ignored = Node::new("QTY", NodeType::Segment);
+        let mut qty_ignored_e1 = Node::new("e1", NodeType::Element);
+        qty_ignored_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("153".to_string()),
+        ));
+        qty_ignored_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("999".to_string()),
+        ));
+        qty_ignored_e1.add_child(Node::with_value(
+            "c3",
+            NodeType::Component,
+            Value::String("BOX".to_string()),
+        ));
+        qty_ignored.add_child(qty_ignored_e1);
+        root.add_child(qty_ignored);
+
+        let mut qty_target = Node::new("QTY", NodeType::Segment);
+        let mut qty_target_e1 = Node::new("e1", NodeType::Element);
+        qty_target_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("153".to_string()),
+        ));
+        qty_target_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("120".to_string()),
+        ));
+        qty_target_e1.add_child(Node::with_value(
+            "c3",
+            NodeType::Component,
+            Value::String("PCE".to_string()),
+        ));
+        qty_target.add_child(qty_target_e1);
+        root.add_child(qty_target);
+
+        let document = Document::new(root);
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.name, "unit");
+        assert_eq!(mapped.value, Some(Value::String("PCE".to_string())));
+    }
+
+    #[test]
+    fn test_numeric_selector_matches_simple_e1_qualifier() {
+        let dsl = r"
+name: selector_simple_e1_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /NAD[3035='SU']/e2
+    target: supplier_id
+";
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut buyer = Node::new("NAD", NodeType::Segment);
+        buyer.add_child(Node::with_value(
+            "e1",
+            NodeType::Element,
+            Value::String("BY".to_string()),
+        ));
+        buyer.add_child(Node::with_value(
+            "e2",
+            NodeType::Element,
+            Value::String("BUYER-001".to_string()),
+        ));
+        root.add_child(buyer);
+
+        let mut supplier = Node::new("NAD", NodeType::Segment);
+        supplier.add_child(Node::with_value(
+            "e1",
+            NodeType::Element,
+            Value::String("SU".to_string()),
+        ));
+        supplier.add_child(Node::with_value(
+            "e2",
+            NodeType::Element,
+            Value::String("SUPPLIER-001".to_string()),
+        ));
+        root.add_child(supplier);
+
+        let document = Document::new(root);
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.name, "supplier_id");
+        assert_eq!(
+            mapped.value,
+            Some(Value::String("SUPPLIER-001".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_unrecognized_selector_key_does_not_match() {
+        let dsl = r"
+name: selector_unknown_key_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /DTM[typo='137']/e1/c2
+    target: response_date
+";
+
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut dtm_137 = Node::new("DTM", NodeType::Segment);
+        let mut dtm_137_e1 = Node::new("e1", NodeType::Element);
+        dtm_137_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("137".to_string()),
+        ));
+        dtm_137_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260115".to_string()),
+        ));
+        dtm_137.add_child(dtm_137_e1);
+        root.add_child(dtm_137);
+
+        let document = Document::new(root);
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.name, "response_date");
+        assert_eq!(mapped.value, Some(Value::Null));
     }
 
     #[test]
