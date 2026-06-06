@@ -505,9 +505,12 @@ impl EdifactParser {
         Some(Document::with_metadata(root, metadata))
     }
 
+    /// Returns `true` for message types whose LIN loops should be wrapped in
+    /// `LINE_ITEM` segment groups. Add new line-item message types to the
+    /// `LINE_ITEM_MESSAGE_TYPES` array.
     fn needs_line_item_grouping(message_type: Option<&str>) -> bool {
         const LINE_ITEM_MESSAGE_TYPES: &[&str] = &["ORDERS", "SLSRPT"];
-        matches!(message_type, Some(message_type) if LINE_ITEM_MESSAGE_TYPES.contains(&message_type))
+        matches!(message_type, Some(msg_type) if LINE_ITEM_MESSAGE_TYPES.contains(&msg_type))
     }
 
     fn message_info(segments: &[Segment]) -> (Option<String>, Option<String>, Option<String>) {
