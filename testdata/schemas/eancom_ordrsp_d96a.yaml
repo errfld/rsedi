@@ -130,6 +130,17 @@ segments:
         min_length: 0
         max_length: 35
 
+  - tag: CNT
+    is_mandatory: false
+    max_repetitions: 10
+    elements:
+      - id: "e1"
+        name: "control_total"
+        data_type: "an"
+        is_mandatory: false
+        min_length: 0
+        max_length: 35
+
   - tag: UNT
     is_mandatory: true
     max_repetitions: 1

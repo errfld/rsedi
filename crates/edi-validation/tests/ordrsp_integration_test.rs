@@ -89,6 +89,21 @@ fn ordrsp_full_fixture_validates_against_schema() {
 }
 
 #[test]
+fn ordrsp_cnt_fixture_validates_against_schema() {
+    let (results, parse_warning_count) = validate_ordrsp_fixture("valid_ordrsp_d96a_with_cnt.edi");
+    assert_eq!(
+        parse_warning_count, 0,
+        "unexpected parse warnings for valid ORDRSP CNT fixture"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|result| !result.has_errors() && !result.has_warnings()),
+        "valid ORDRSP CNT fixture should not report validation errors or warnings"
+    );
+}
+
+#[test]
 fn ordrsp_missing_bgm_fixture_honors_strictness_levels() {
     let root = repo_root();
     let schema_path = root.join("testdata/schemas/eancom_ordrsp_d96a.yaml");
