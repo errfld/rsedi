@@ -92,7 +92,6 @@ impl MappingContext {
 
 impl MappingRuntime {
     const INVALID_SELECTOR_KEY: &str = "__invalid_selector_key__";
-    const INVALID_SELECTOR_VALUE: &str = "__invalid_selector_value__";
 
     /// Create a new mapping runtime
     #[must_use]
@@ -404,13 +403,16 @@ impl MappingRuntime {
 
         let component_name = &component[..selector_start];
         let selector_content = &component[selector_start + 1..component.len() - 1];
-        let selector = Self::parse_selector(selector_content).or(Some((
-            Self::INVALID_SELECTOR_KEY,
-            Self::INVALID_SELECTOR_VALUE,
-        )));
+        let selector =
+            Self::parse_selector(selector_content).or(Some((Self::INVALID_SELECTOR_KEY, "")));
         (component_name, selector)
     }
 
+    /// Parse a bracket selector expression into `(key, value)`.
+    ///
+    /// Empty keys and bare values default to `c1`, so `[='137']` and `['137']`
+    /// are accepted shorthand for `[c1='137']`. Empty or malformed selectors
+    /// return `None` so callers can treat them as invalid selectors.
     fn parse_selector(selector: &str) -> Option<(&str, &str)> {
         let trimmed = selector.trim();
         if trimmed.is_empty() {
@@ -1069,6 +1071,38 @@ rules:
                 Some(Value::Null),
                 "malformed selector {source} should degrade to null without panicking"
             );
+        }
+    }
+
+    #[test]
+    fn test_selector_shorthand_defaults_to_c1() {
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut qty = Node::new("QTY", NodeType::Segment);
+        let mut qty_e1 = Node::new("e1", NodeType::Element);
+        qty_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("153".to_string()),
+        ));
+        qty_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("120".to_string()),
+        ));
+        qty.add_child(qty_e1);
+        root.add_child(qty);
+        let document = Document::new(root);
+
+        for source in ["/QTY['153']/e1/c2", "/QTY[='153']/e1/c2"] {
+            let dsl = format!(
+                "name: selector_shorthand_test\nsource_type: TEST\ntarget_type: OUTPUT\nrules:\n  - type: field\n    source: {source}\n    target: quantity\n"
+            );
+            let mapping = MappingDsl::parse(&dsl).unwrap();
+            let mut runtime = MappingRuntime::new();
+            let result = runtime.execute(&mapping, &document).unwrap();
+            let mapped = first_mapped_node(&result);
+            assert_eq!(mapped.value, Some(Value::String("120".to_string())));
         }
     }
 
