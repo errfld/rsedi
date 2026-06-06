@@ -327,10 +327,7 @@ impl<R: Read> CsvRecordIterator<R> {
 
         let (headers, pending_error) = if has_header {
             match csv_reader.headers() {
-                Ok(headers) => (
-                    headers.iter().map(|s| s.to_string()).collect(),
-                    None,
-                ),
+                Ok(headers) => (headers.iter().map(|s| s.to_string()).collect(), None),
                 Err(error) => (Vec::new(), Some(CsvError::read_at(1, error.to_string()))),
             }
         } else {
