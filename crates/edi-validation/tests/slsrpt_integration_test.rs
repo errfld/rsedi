@@ -102,3 +102,21 @@ fn slsrpt_missing_bgm_fixture_reports_validation_errors() {
         "expected MISSING_MANDATORY_SEGMENT error code"
     );
 }
+
+#[test]
+fn slsrpt_line_item_without_qty_reports_validation_errors() {
+    let (results, _parse_warning_count) =
+        validate_slsrpt_fixture("invalid_slsrpt_d96a_line_without_qty.edi");
+    let missing_qty_issue = results
+        .iter()
+        .flat_map(|result| result.report.all_issues())
+        .find(|issue| {
+            issue.code.as_deref() == Some("MISSING_MANDATORY_SEGMENT")
+                && issue.message.contains("QTY")
+        });
+
+    assert!(
+        missing_qty_issue.is_some(),
+        "expected missing mandatory QTY to be reported for the incomplete line item"
+    );
+}

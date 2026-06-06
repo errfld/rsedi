@@ -726,6 +726,12 @@ impl ValidationEngine {
             }
         }
 
+        // Check mandatory child segments inside parser-produced segment groups.
+        self.validate_segment_groups_against_schema(&doc.root, schema, result, context);
+        if self.should_stop(result) {
+            return Ok(());
+        }
+
         // Check for mandatory segments
         for segment_def in &schema.segments {
             if segment_def.is_mandatory {
@@ -763,6 +769,75 @@ impl ValidationEngine {
         }
 
         Ok(())
+    }
+
+    fn validate_segment_groups_against_schema(
+        &self,
+        node: &Node,
+        schema: &Schema,
+        result: &mut ValidationResult,
+        context: &ValidationContext,
+    ) {
+        let mut line_item_groups = Vec::new();
+        Self::collect_line_item_groups(node, &mut line_item_groups);
+        if line_item_groups.is_empty() {
+            return;
+        }
+
+        let mandatory_tags: Vec<&str> = schema
+            .segments
+            .iter()
+            .filter(|segment| segment.is_mandatory)
+            .map(|segment| segment.tag.as_str())
+            .filter(|tag| {
+                line_item_groups
+                    .iter()
+                    .any(|group| group.children.iter().any(|child| child.name == *tag))
+            })
+            .collect();
+
+        for group in line_item_groups {
+            self.validate_line_item_group(group, &mandatory_tags, result, context);
+            if self.should_stop(result) {
+                return;
+            }
+        }
+    }
+
+    fn collect_line_item_groups<'a>(node: &'a Node, groups: &mut Vec<&'a Node>) {
+        if node.node_type == NodeType::SegmentGroup && node.name == "LINE_ITEM" {
+            groups.push(node);
+        }
+
+        for child in &node.children {
+            Self::collect_line_item_groups(child, groups);
+        }
+    }
+
+    fn validate_line_item_group(
+        &self,
+        group: &Node,
+        mandatory_tags: &[&str],
+        result: &mut ValidationResult,
+        context: &ValidationContext,
+    ) {
+        for tag in mandatory_tags {
+            let found = group.children.iter().any(|child| child.name == *tag);
+            if !found {
+                self.add_error(
+                    result,
+                    context,
+                    "MISSING_MANDATORY_SEGMENT",
+                    format!(
+                        "Mandatory segment '{tag}' is missing from segment group '{}'",
+                        group.name
+                    ),
+                );
+                if self.should_stop(result) {
+                    return;
+                }
+            }
+        }
     }
 
     /// Recursively validate a node
