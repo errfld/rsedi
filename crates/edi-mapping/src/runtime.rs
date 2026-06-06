@@ -510,10 +510,16 @@ impl MappingRuntime {
         // Common EDI qualifier code selectors (e.g. 2005, 3035, 6063) map to
         // the first element's qualifier, but arbitrary keys should fail closed.
         if normalized.chars().all(|ch| ch.is_ascii_digit()) {
-            return Self::qualifier_value(node);
+            return Self::is_supported_numeric_qualifier_key(normalized)
+                .then(|| Self::qualifier_value(node))
+                .flatten();
         }
 
         None
+    }
+
+    fn is_supported_numeric_qualifier_key(key: &str) -> bool {
+        matches!(key, "1153" | "2005" | "3035" | "5025" | "5125" | "6063")
     }
 
     fn qualifier_value(node: &Node) -> Option<String> {
@@ -1165,6 +1171,42 @@ target_type: OUTPUT
 rules:
   - type: field
     source: /DTM[foo='137']/e1/c2
+    target: date
+";
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut dtm = Node::new("DTM", NodeType::Segment);
+        let mut dtm_e1 = Node::new("e1", NodeType::Element);
+        dtm_e1.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("137".to_string()),
+        ));
+        dtm_e1.add_child(Node::with_value(
+            "c2",
+            NodeType::Component,
+            Value::String("20260116".to_string()),
+        ));
+        dtm.add_child(dtm_e1);
+        root.add_child(dtm);
+        let document = Document::new(root);
+
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.value, Some(Value::Null));
+    }
+
+    #[test]
+    fn test_unknown_numeric_selector_key_does_not_match() {
+        let dsl = r"
+name: selector_unknown_numeric_key_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /DTM[2006='137']/e1/c2
     target: date
 ";
         let mapping = MappingDsl::parse(dsl).unwrap();
