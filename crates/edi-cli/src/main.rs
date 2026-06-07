@@ -506,6 +506,8 @@ fn default_config_paths() -> Vec<PathBuf> {
 }
 
 fn init_project(profile: &str, force: bool) -> anyhow::Result<CliExitCode> {
+    ensure_valid_profile_name(profile)?;
+
     let config_path = Path::new("rsedi.yaml");
     if config_path.exists() && !force {
         bail!(
@@ -547,6 +549,21 @@ profiles:
     Ok(CliExitCode::Success)
 }
 
+fn ensure_valid_profile_name(profile: &str) -> anyhow::Result<()> {
+    if profile.is_empty()
+        || !profile
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!(
+            "Invalid profile name '{}'; use only ASCII letters, digits, '.', '_' or '-'",
+            profile
+        );
+    }
+
+    Ok(())
+}
+
 fn config_check(config: &CliConfig, profile_name: Option<&str>) -> anyhow::Result<CliExitCode> {
     if config.source_path.is_none() {
         bail!("No config file found. Run 'edi init' or pass --config <path>.");
@@ -574,8 +591,16 @@ fn config_check(config: &CliConfig, profile_name: Option<&str>) -> anyhow::Resul
 
     let mut missing = Vec::new();
     for (name, profile) in &profiles {
-        check_profile_file(name, "schema", profile.schema.as_ref(), &mut missing);
-        check_profile_file(name, "mapping", profile.mapping.as_ref(), &mut missing);
+        check_profile_path(name, "input", profile.input.as_ref(), &mut missing);
+        check_profile_path(name, "output", profile.output.as_ref(), &mut missing);
+        check_profile_path(name, "schema", profile.schema.as_ref(), &mut missing);
+        check_profile_path(name, "mapping", profile.mapping.as_ref(), &mut missing);
+        check_profile_path(
+            name,
+            "quarantine",
+            profile.quarantine.as_ref(),
+            &mut missing,
+        );
     }
 
     if !missing.is_empty() {
@@ -594,7 +619,7 @@ fn config_check(config: &CliConfig, profile_name: Option<&str>) -> anyhow::Resul
     Ok(CliExitCode::Success)
 }
 
-fn check_profile_file(
+fn check_profile_path(
     profile_name: &str,
     field: &str,
     path: Option<&PathBuf>,
@@ -603,7 +628,7 @@ fn check_profile_file(
     if let Some(path) = path {
         if !path.exists() {
             missing.push(format!(
-                "profile '{profile_name}' {field} file '{}' does not exist",
+                "profile '{profile_name}' {field} path '{}' does not exist",
                 path.display()
             ));
         }

@@ -61,6 +61,10 @@ impl Drop for TempDir {
     }
 }
 
+const EXIT_SUCCESS: i32 = 0;
+const EXIT_ERRORS: i32 = 2;
+const EXIT_CONFIG_ERROR: i32 = 3;
+
 fn assert_exit_code(output: &Output, expected: i32) {
     let actual = output.status.code().unwrap_or(-1);
     assert_eq!(
@@ -82,7 +86,7 @@ fn init_creates_starter_config_and_directories() {
         .output()
         .expect("edi init should execute");
 
-    assert_exit_code(&output, 0);
+    assert_exit_code(&output, EXIT_SUCCESS);
     assert!(temp.path().join("rsedi.yaml").exists());
     assert!(temp.path().join("schemas").is_dir());
     assert!(temp.path().join("mappings").is_dir());
@@ -99,10 +103,29 @@ fn init_creates_starter_config_and_directories() {
 }
 
 #[test]
+fn init_rejects_profile_names_that_would_break_yaml() {
+    let temp = TempDir::new("init-invalid-profile");
+
+    let output = Command::new(cargo_bin())
+        .current_dir(temp.path())
+        .args(["init", "--profile", "bad: name"])
+        .output()
+        .expect("edi init should execute");
+
+    assert_exit_code(&output, EXIT_ERRORS);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Invalid profile name"));
+    assert!(!temp.path().join("rsedi.yaml").exists());
+}
+
+#[test]
 fn config_check_validates_profile_referenced_files() {
     let temp = TempDir::new("config-check-valid");
     fs::create_dir_all(temp.path().join("schemas")).expect("schema dir");
     fs::create_dir_all(temp.path().join("mappings")).expect("mapping dir");
+    fs::create_dir_all(temp.path().join("input")).expect("input dir");
+    fs::create_dir_all(temp.path().join("output")).expect("output dir");
+    fs::create_dir_all(temp.path().join("quarantine")).expect("quarantine dir");
     fs::write(
         temp.path().join("schemas/orders.yaml"),
         "name: ORDERS\nversion: D96A\nsegments: []\n",
@@ -113,6 +136,12 @@ fn config_check_validates_profile_referenced_files() {
         "source_type: EDI\ntarget_type: JSON\nrules: []\n",
     )
     .expect("mapping file");
+    fs::write(
+        temp.path().join("input/orders.edi"),
+        "UNH+1+ORDERS:D:96A:UN'",
+    )
+    .expect("input file");
+    fs::write(temp.path().join("output/orders.json"), "{}").expect("output file");
     fs::write(
         temp.path().join("rsedi.yaml"),
         r#"profiles:
@@ -133,7 +162,7 @@ fn config_check_validates_profile_referenced_files() {
         .output()
         .expect("edi config check should execute");
 
-    assert_exit_code(&output, 0);
+    assert_exit_code(&output, EXIT_SUCCESS);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Config OK"));
     assert!(stdout.contains("orders"));
@@ -159,7 +188,7 @@ fn config_check_reports_unknown_keys_and_missing_files() {
         .output()
         .expect("edi config check should execute");
 
-    assert_exit_code(&output, 3);
+    assert_exit_code(&output, EXIT_CONFIG_ERROR);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown field"));
     assert!(stderr.contains("typo_path"));
@@ -172,8 +201,11 @@ fn config_check_reports_missing_referenced_files() {
         temp.path().join("rsedi.yaml"),
         r#"profiles:
   orders:
+    input: input/missing.edi
+    output: output/missing.json
     schema: schemas/missing.yaml
     mapping: mappings/missing.yaml
+    quarantine: quarantine
 "#,
     )
     .expect("config file");
@@ -184,11 +216,14 @@ fn config_check_reports_missing_referenced_files() {
         .output()
         .expect("edi config check should execute");
 
-    assert_exit_code(&output, 2);
+    assert_exit_code(&output, EXIT_ERRORS);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Missing:"));
     assert!(stderr.contains("schemas/missing.yaml"));
     assert!(stderr.contains("mappings/missing.yaml"));
+    assert!(stderr.contains("input/missing.edi"));
+    assert!(stderr.contains("output/missing.json"));
+    assert!(stderr.contains("quarantine"));
 }
 
 #[test]
@@ -222,7 +257,7 @@ fn validate_uses_profile_paths_from_default_config() {
         .output()
         .expect("edi validate should execute");
 
-    assert_exit_code(&output, 0);
+    assert_exit_code(&output, EXIT_SUCCESS);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Validation passed with no warnings."));
 }
@@ -260,7 +295,7 @@ fn transform_uses_profile_paths_for_input_mapping_and_output() {
         .output()
         .expect("edi transform should execute");
 
-    assert_exit_code(&output, 0);
+    assert_exit_code(&output, EXIT_SUCCESS);
     let json = fs::read_to_string(temp.path().join("output/orders.json"))
         .expect("profile output should be written");
     assert!(json.contains("ORDER123"));
