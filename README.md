@@ -88,11 +88,39 @@ Generate EDI from CSV/JSON input using a mapping:
 edi generate <input.{csv|json}> <output.edi> -m <mapping.yaml> [--input-format csv|json]
 ```
 
-Config file flag (currently ignored in MVP):
+Project config workflow:
 
 ```bash
-edi --config <path> <subcommand>
+edi init --profile orders
+edi config check --profile orders
+edi --profile orders validate
+edi --profile orders transform
 ```
+
+`edi init` creates `rsedi.yaml` plus starter directories (`schemas/`, `mappings/`,
+`input/`, `output/`, `quarantine/`). Profiles can store common input, output,
+schema, mapping, quarantine, progress, and color defaults so repeated partner or
+environment workflows do not need long flag lists. Explicit CLI arguments still
+override profile values.
+
+Example `rsedi.yaml`:
+
+```yaml
+progress: true
+progress_threshold_bytes: 1048576
+color: auto
+profiles:
+  orders:
+    input: input/orders.edi
+    output: output/orders.json
+    schema: schemas/eancom_orders_d96a.yaml
+    mapping: mappings/orders_to_json.yaml
+    quarantine: quarantine
+    output_format: json
+```
+
+Legacy config paths such as `edi-cli.yaml` are still discovered, but new projects
+should prefer `rsedi.yaml`.
 
 ### Exit Codes
 
