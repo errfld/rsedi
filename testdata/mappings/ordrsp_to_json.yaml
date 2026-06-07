@@ -1,0 +1,33 @@
+name: ordrsp_to_json
+source_type: EANCOM_ORDRSP
+target_type: JSON_ORDRSP
+
+rules:
+  - type: field
+    source: /BGM/e2
+    target: response_number
+
+  - type: field
+    # response_date uses parser-produced composite children. This path assumes
+    # EDIFACT parsing always decomposes DTM/e1 into c1/c2/c3 regardless of
+    # schema scalar typing; changing that parser behavior would break
+    # /DTM[c1='137']/e1/c2 resolution.
+    source: /DTM[c1='137']/e1/c2
+    target: response_date
+
+  - type: foreach
+    source: LINE_ITEM
+    target: lines
+    rules:
+      - type: field
+        source: LIN/e1
+        target: line_number
+      - type: field
+        source: LIN/e3/c1
+        target: item_id
+      - type: field
+        source: QTY[c1='21']/e1/c2
+        target: confirmed_quantity
+      - type: field
+        source: PRI[c1='AAA']/e1/c2
+        target: unit_price

@@ -509,8 +509,12 @@ impl EdifactParser {
     /// `LINE_ITEM` segment groups. Add new line-item message types to the
     /// `LINE_ITEM_MESSAGE_TYPES` array.
     fn needs_line_item_grouping(message_type: Option<&str>) -> bool {
-        const LINE_ITEM_MESSAGE_TYPES: &[&str] = &["ORDERS", "SLSRPT"];
+        const LINE_ITEM_MESSAGE_TYPES: &[&str] = &["ORDERS", "SLSRPT", "ORDRSP"];
         matches!(message_type, Some(msg_type) if LINE_ITEM_MESSAGE_TYPES.contains(&msg_type))
+    }
+
+    fn is_line_item_group_boundary(tag: &str) -> bool {
+        matches!(tag, "UNS" | "CNT" | "UNT")
     }
 
     fn message_info(segments: &[Segment]) -> (Option<String>, Option<String>, Option<String>) {
@@ -562,7 +566,7 @@ impl EdifactParser {
                     group.add_child(segment.to_node());
                     current_group = Some(group);
                 }
-                "UNS" | "UNT" => {
+                tag if Self::is_line_item_group_boundary(tag) => {
                     if let Some(group) = current_group.take() {
                         children.push(group);
                     }
@@ -721,10 +725,10 @@ UNT+7+1'";
     fn test_slsrpt_grouping_with_multiple_lin_loops() {
         let data = b"UNH+1+SLSRPT:D:96A:UN'\
 BGM+73E+SLSRPT001+9'\
-LIN+1++4006381333931:EN'\
+LIN+1++400****3931:EN'\
 QTY+153:120:PCE'\
 MOA+203:359.88'\
-LIN+2++4006381333948:EN'\
+LIN+2++400****3948:EN'\
 QTY+153:80:PCE'\
 MOA+203:239.92'\
 UNT+9+1'";
@@ -733,6 +737,7 @@ UNT+9+1'";
         let docs = parser.parse(data, "test").unwrap();
 
         assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].metadata.doc_type, Some("SLSRPT".to_string()));
         let root = &docs[0].root;
 
         let group_nodes: Vec<&Node> = root
@@ -779,6 +784,102 @@ UNT+9+1'";
                 .children
                 .iter()
                 .any(|child| child.name == "MOA")
+        );
+    }
+
+    #[test]
+    fn test_ordrsp_grouping_with_multiple_lin_loops() {
+        let data = b"UNH+1+ORDRSP:D:96A:UN'\
+BGM+231+ORDRSP001+29'\
+LIN+1++4006381333931:EN'\
+QTY+21:100:PCE'\
+PRI+AAA:2.99'\
+LIN+2++4006381333948:EN'\
+QTY+21:75:PCE'\
+PRI+AAA:1.49'\
+UNT+9+1'";
+
+        let parser = EdifactParser::new();
+        let docs = parser.parse(data, "test").unwrap();
+
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].metadata.doc_type, Some("ORDRSP".to_string()));
+        let root = &docs[0].root;
+
+        let group_nodes: Vec<&Node> = root
+            .children
+            .iter()
+            .filter(|node| node.node_type == NodeType::SegmentGroup)
+            .collect();
+
+        assert_eq!(group_nodes.len(), 2);
+        assert_eq!(group_nodes[0].name, "LINE_ITEM");
+        assert_eq!(group_nodes[1].name, "LINE_ITEM");
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "PRI")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "PRI")
+        );
+    }
+
+    #[test]
+    fn test_ordrsp_grouping_keeps_cnt_outside_last_line_item() {
+        let data = b"UNH+1+ORDRSP:D:96A:UN'\
+BGM+231+ORDRSP001+29'\
+LIN+1++4006381333931:EN'\
+QTY+21:100:PCE'\
+PRI+AAA:2.99'\
+CNT+2:1'\
+UNT+7+1'";
+
+        let parser = EdifactParser::new();
+        let docs = parser.parse(data, "test").unwrap();
+        let root = &docs[0].root;
+
+        let line_group = root
+            .children
+            .iter()
+            .find(|node| node.name == "LINE_ITEM")
+            .expect("expected LINE_ITEM group");
+
+        assert!(
+            !line_group.children.iter().any(|child| child.name == "CNT"),
+            "summary CNT must not be nested into LINE_ITEM"
+        );
+        assert!(
+            root.children.iter().any(|node| node.name == "CNT"),
+            "summary CNT should stay at message root level"
         );
     }
 
