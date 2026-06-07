@@ -6,6 +6,7 @@
 //! EDI transformations and managing configurations.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::{IsTerminal, Write};
@@ -54,6 +55,10 @@ struct CliConfig {
     progress: bool,
     progress_threshold_bytes: u64,
     color: ColorMode,
+    profiles: HashMap<String, ProfileConfig>,
+
+    #[serde(skip)]
+    source_path: Option<PathBuf>,
 }
 
 impl Default for CliConfig {
@@ -62,8 +67,24 @@ impl Default for CliConfig {
             progress: true,
             progress_threshold_bytes: 1024 * 1024,
             color: ColorMode::Auto,
+            profiles: HashMap::new(),
+            source_path: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ProfileConfig {
+    input: Option<PathBuf>,
+    output: Option<PathBuf>,
+    schema: Option<PathBuf>,
+    mapping: Option<PathBuf>,
+    quarantine: Option<PathBuf>,
+    output_format: Option<String>,
+    color: Option<ColorMode>,
+    progress: Option<bool>,
+    progress_threshold_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -166,6 +187,10 @@ struct Cli {
     #[arg(short, long)]
     config: Option<String>,
 
+    /// Named project profile to apply from the config file
+    #[arg(long, global = true)]
+    profile: Option<String>,
+
     /// Subcommand to execute
     #[command(subcommand)]
     command: Commands,
@@ -173,17 +198,34 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Create a starter rsedi.yaml and workspace directories
+    Init {
+        /// Profile name to create in the starter config
+        #[arg(long, default_value = "default")]
+        profile: String,
+
+        /// Overwrite an existing rsedi.yaml
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+
+    /// Manage CLI configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+
     /// Transform an EDI file
     Transform {
-        /// Input file path
-        input: String,
+        /// Input file path (uses profile input when omitted)
+        input: Option<String>,
 
-        /// Output file path (writes to stdout when omitted)
+        /// Output file path (writes to stdout when omitted unless profile output is set)
         output: Option<String>,
 
         /// Mapping file path
         #[arg(short, long)]
-        mapping: String,
+        mapping: Option<String>,
 
         /// Schema file path
         #[arg(short, long)]
@@ -192,12 +234,12 @@ enum Commands {
 
     /// Validate an EDI file against a schema
     Validate {
-        /// Input file path
-        input: String,
+        /// Input file path (uses profile input when omitted)
+        input: Option<String>,
 
         /// Schema file path
         #[arg(short, long)]
-        schema: String,
+        schema: Option<String>,
     },
 
     /// Parse an EDI file and output JSON IR
@@ -215,19 +257,29 @@ enum Commands {
 
     /// Generate EDI output from CSV/JSON input using a mapping
     Generate {
-        /// Input file path (CSV or JSON)
-        input: String,
+        /// Input file path (CSV or JSON; uses profile input when omitted)
+        input: Option<String>,
 
-        /// Output file path (writes to stdout when omitted)
+        /// Output file path (writes to stdout when omitted unless profile output is set)
         output: Option<String>,
 
         /// Mapping file path
         #[arg(short, long)]
-        mapping: String,
+        mapping: Option<String>,
 
         /// Source input format (inferred from file extension or mapping source_type when omitted)
         #[arg(long, value_enum)]
         input_format: Option<GenerateInputFormat>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Validate project configuration and referenced files
+    Check {
+        /// Profile to check (defaults to --profile or all profiles)
+        #[arg(long)]
+        profile: Option<String>,
     },
 }
 
@@ -246,50 +298,145 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<CliExitCode> {
     let cli = Cli::parse();
     let config = load_cli_config(cli.config.as_deref())?;
-    let runtime = RuntimeOptions {
-        progress: config.progress,
-        progress_threshold_bytes: config.progress_threshold_bytes,
-        color: config.color,
-    };
+    let base_runtime = runtime_options(&config, None);
 
     if let Some(config_path) = cli.config.as_deref() {
         tracing::info!(config = %config_path, "Loaded explicit CLI config");
+    } else if let Some(config_path) = &config.source_path {
+        tracing::info!(config = %config_path.display(), "Loaded discovered CLI config");
     }
 
-    let command_result = match cli.command {
-        Commands::Transform {
-            input,
-            output,
-            mapping,
-            schema,
-        } => transform(
-            &input,
-            output.as_deref(),
-            &mapping,
-            schema.as_deref(),
-            runtime,
-        ),
-        Commands::Validate { input, schema } => validate(&input, &schema, runtime),
-        Commands::Parse {
-            input,
-            output,
-            pretty,
-        } => parse(&input, output.as_deref(), pretty, runtime),
-        Commands::Generate {
-            input,
-            output,
-            mapping,
-            input_format,
-        } => generate(&input, output.as_deref(), &mapping, input_format, runtime),
-    };
+    let command_result = (|| -> anyhow::Result<CliExitCode> {
+        match cli.command {
+            Commands::Init { profile, force } => {
+                init_project(cli.profile.as_deref().unwrap_or(&profile), force)
+            }
+            Commands::Config { command } => match command {
+                ConfigCommands::Check { profile } => {
+                    config_check(&config, profile.as_deref().or(cli.profile.as_deref()))
+                }
+            },
+            Commands::Transform {
+                input,
+                output,
+                mapping,
+                schema,
+            } => {
+                let profile = resolve_selected_profile(&config, cli.profile.as_deref())?;
+                let runtime = runtime_options(&config, profile);
+                let input =
+                    resolve_profile_value(input, profile.and_then(|p| p.input.as_ref()), "input")?;
+                let output =
+                    resolve_optional_profile_value(output, profile.and_then(|p| p.output.as_ref()));
+                let mapping = resolve_profile_value(
+                    mapping,
+                    profile.and_then(|p| p.mapping.as_ref()),
+                    "mapping",
+                )?;
+                let schema =
+                    resolve_optional_profile_value(schema, profile.and_then(|p| p.schema.as_ref()));
+                transform(
+                    &input,
+                    output.as_deref(),
+                    &mapping,
+                    schema.as_deref(),
+                    runtime,
+                )
+            }
+            Commands::Validate { input, schema } => {
+                let profile = resolve_selected_profile(&config, cli.profile.as_deref())?;
+                let runtime = runtime_options(&config, profile);
+                let input =
+                    resolve_profile_value(input, profile.and_then(|p| p.input.as_ref()), "input")?;
+                let schema = resolve_profile_value(
+                    schema,
+                    profile.and_then(|p| p.schema.as_ref()),
+                    "schema",
+                )?;
+                validate(&input, &schema, runtime)
+            }
+            Commands::Parse {
+                input,
+                output,
+                pretty,
+            } => parse(&input, output.as_deref(), pretty, base_runtime),
+            Commands::Generate {
+                input,
+                output,
+                mapping,
+                input_format,
+            } => {
+                let profile = resolve_selected_profile(&config, cli.profile.as_deref())?;
+                let runtime = runtime_options(&config, profile);
+                let input =
+                    resolve_profile_value(input, profile.and_then(|p| p.input.as_ref()), "input")?;
+                let output =
+                    resolve_optional_profile_value(output, profile.and_then(|p| p.output.as_ref()));
+                let mapping = resolve_profile_value(
+                    mapping,
+                    profile.and_then(|p| p.mapping.as_ref()),
+                    "mapping",
+                )?;
+                generate(&input, output.as_deref(), &mapping, input_format, runtime)
+            }
+        }
+    })();
 
     match command_result {
         Ok(code) => Ok(code),
         Err(error) => {
-            print_error(runtime.color, &format!("{error:#}"));
+            print_error(base_runtime.color, &format!("{error:#}"));
             Ok(CliExitCode::Errors)
         }
     }
+}
+
+fn runtime_options(config: &CliConfig, profile: Option<&ProfileConfig>) -> RuntimeOptions {
+    RuntimeOptions {
+        progress: profile.and_then(|p| p.progress).unwrap_or(config.progress),
+        progress_threshold_bytes: profile
+            .and_then(|p| p.progress_threshold_bytes)
+            .unwrap_or(config.progress_threshold_bytes),
+        color: profile.and_then(|p| p.color).unwrap_or(config.color),
+    }
+}
+
+fn resolve_selected_profile<'a>(
+    config: &'a CliConfig,
+    profile_name: Option<&str>,
+) -> anyhow::Result<Option<&'a ProfileConfig>> {
+    match profile_name {
+        Some(name) => config
+            .profiles
+            .get(name)
+            .map(Some)
+            .ok_or_else(|| anyhow!("Profile '{}' was not found in the CLI config", name)),
+        None => Ok(None),
+    }
+}
+
+fn resolve_profile_value(
+    explicit: Option<String>,
+    profile_value: Option<&PathBuf>,
+    field: &str,
+) -> anyhow::Result<String> {
+    explicit
+        .or_else(|| profile_value.map(|path| path.to_string_lossy().into_owned()))
+        .ok_or_else(|| {
+            let flag_hint = match field {
+                "mapping" => "--mapping",
+                "schema" => "--schema",
+                _ => field,
+            };
+            anyhow!("Missing {field}; pass {flag_hint} or select a profile that defines {field}")
+        })
+}
+
+fn resolve_optional_profile_value(
+    explicit: Option<String>,
+    profile_value: Option<&PathBuf>,
+) -> Option<String> {
+    explicit.or_else(|| profile_value.map(|path| path.to_string_lossy().into_owned()))
 }
 
 fn load_cli_config(explicit_path: Option<&str>) -> anyhow::Result<CliConfig> {
@@ -310,14 +457,39 @@ fn load_cli_config(explicit_path: Option<&str>) -> anyhow::Result<CliConfig> {
 fn read_cli_config_file(path: &Path) -> anyhow::Result<CliConfig> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("Failed to read CLI config '{}'", path.display()))?;
-    serde_yaml::from_slice(&bytes)
-        .with_context(|| format!("Failed to parse CLI config '{}'", path.display()))
+    let mut config: CliConfig = serde_yaml::from_slice(&bytes)
+        .with_context(|| format!("Failed to parse CLI config '{}'", path.display()))?;
+    config.source_path = Some(path.to_path_buf());
+    if let Some(base_dir) = path.parent() {
+        for profile in config.profiles.values_mut() {
+            resolve_profile_paths(base_dir, profile);
+        }
+    }
+    Ok(config)
+}
+
+fn resolve_profile_paths(base_dir: &Path, profile: &mut ProfileConfig) {
+    absolutize_profile_path(base_dir, &mut profile.input);
+    absolutize_profile_path(base_dir, &mut profile.output);
+    absolutize_profile_path(base_dir, &mut profile.schema);
+    absolutize_profile_path(base_dir, &mut profile.mapping);
+    absolutize_profile_path(base_dir, &mut profile.quarantine);
+}
+
+fn absolutize_profile_path(base_dir: &Path, value: &mut Option<PathBuf>) {
+    if let Some(path) = value {
+        if path.is_relative() {
+            *path = base_dir.join(&path);
+        }
+    }
 }
 
 fn default_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     if let Ok(current_dir) = env::current_dir() {
+        paths.push(current_dir.join("rsedi.yaml"));
+        paths.push(current_dir.join("edi.yaml"));
         paths.push(current_dir.join("edi-cli.yaml"));
         paths.push(current_dir.join(".edi-cli.yaml"));
     }
@@ -331,6 +503,136 @@ fn default_config_paths() -> Vec<PathBuf> {
     }
 
     paths
+}
+
+fn init_project(profile: &str, force: bool) -> anyhow::Result<CliExitCode> {
+    ensure_valid_profile_name(profile)?;
+
+    let config_path = Path::new("rsedi.yaml");
+    if config_path.exists() && !force {
+        bail!(
+            "Config '{}' already exists; pass --force to overwrite it",
+            config_path.display()
+        );
+    }
+
+    for dir in ["schemas", "mappings", "input", "output", "quarantine"] {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create directory '{dir}'"))?;
+    }
+
+    let config = format!(
+        r#"# rsedi project configuration
+# Use --profile {profile} to apply these defaults to validate/transform/generate.
+progress: true
+progress_threshold_bytes: 1048576
+color: auto
+profiles:
+  {profile}:
+    input: input/example.edi
+    output: output/result.json
+    schema: schemas/example.yaml
+    mapping: mappings/example.yaml
+    quarantine: quarantine
+    output_format: json
+"#
+    );
+    std::fs::write(config_path, config)
+        .with_context(|| format!("Failed to write '{}'", config_path.display()))?;
+
+    println!(
+        "Created {} with profile '{}'.",
+        config_path.display(),
+        profile
+    );
+    println!("Created starter directories: schemas, mappings, input, output, quarantine.");
+    Ok(CliExitCode::Success)
+}
+
+fn ensure_valid_profile_name(profile: &str) -> anyhow::Result<()> {
+    if profile.is_empty()
+        || !profile
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!(
+            "Invalid profile name '{}'; use only ASCII letters, digits, '.', '_' or '-'",
+            profile
+        );
+    }
+
+    Ok(())
+}
+
+fn config_check(config: &CliConfig, profile_name: Option<&str>) -> anyhow::Result<CliExitCode> {
+    if config.source_path.is_none() {
+        bail!("No config file found. Run 'edi init' or pass --config <path>.");
+    }
+
+    let profiles: Vec<(&str, &ProfileConfig)> = if let Some(name) = profile_name {
+        vec![
+            config
+                .profiles
+                .get_key_value(name)
+                .map(|(key, profile)| (key.as_str(), profile))
+                .ok_or_else(|| anyhow!("Profile '{}' was not found in the CLI config", name))?,
+        ]
+    } else {
+        config
+            .profiles
+            .iter()
+            .map(|(name, profile)| (name.as_str(), profile))
+            .collect()
+    };
+
+    if profiles.is_empty() {
+        bail!("Config contains no profiles.");
+    }
+
+    let mut missing = Vec::new();
+    for (name, profile) in &profiles {
+        check_profile_path(name, "input", profile.input.as_ref(), &mut missing);
+        check_profile_path(name, "output", profile.output.as_ref(), &mut missing);
+        check_profile_path(name, "schema", profile.schema.as_ref(), &mut missing);
+        check_profile_path(name, "mapping", profile.mapping.as_ref(), &mut missing);
+        check_profile_path(
+            name,
+            "quarantine",
+            profile.quarantine.as_ref(),
+            &mut missing,
+        );
+    }
+
+    if !missing.is_empty() {
+        for line in &missing {
+            eprintln!("Missing: {line}");
+        }
+        return Ok(CliExitCode::Errors);
+    }
+
+    let checked = profiles
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("Config OK: checked profile(s): {checked}");
+    Ok(CliExitCode::Success)
+}
+
+fn check_profile_path(
+    profile_name: &str,
+    field: &str,
+    path: Option<&PathBuf>,
+    missing: &mut Vec<String>,
+) {
+    if let Some(path) = path {
+        if !path.exists() {
+            missing.push(format!(
+                "profile '{profile_name}' {field} path '{}' does not exist",
+                path.display()
+            ));
+        }
+    }
 }
 
 fn use_color(mode: ColorMode) -> bool {

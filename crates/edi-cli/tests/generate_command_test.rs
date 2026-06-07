@@ -266,7 +266,7 @@ fn generate_help_includes_mapping_and_input_format_flags() {
     assert!(output.status.success(), "generate --help should succeed");
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
-    assert!(stdout.contains("<INPUT>"));
+    assert!(stdout.contains("[INPUT]"));
     assert!(stdout.contains("[OUTPUT]"));
     assert!(stdout.contains("--mapping <MAPPING>"));
     assert!(stdout.contains("--input-format <INPUT_FORMAT>"));
