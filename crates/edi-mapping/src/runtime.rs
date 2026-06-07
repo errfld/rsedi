@@ -519,9 +519,15 @@ impl MappingRuntime {
         // the segment qualifier value, but arbitrary numeric keys should fail
         // closed instead of silently matching the first element's qualifier.
         if normalized.chars().all(|ch| ch.is_ascii_digit()) {
-            return Self::is_supported_numeric_qualifier_key(normalized)
-                .then(|| Self::qualifier_component_value(node))
-                .flatten();
+            if Self::is_supported_numeric_qualifier_key(normalized) {
+                return Self::qualifier_component_value(node);
+            }
+            tracing::warn!(
+                selector_key = normalized,
+                node_name = node.name.as_str(),
+                "unrecognized numeric selector key; selector will not match"
+            );
+            return None;
         }
 
         None

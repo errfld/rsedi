@@ -116,6 +116,11 @@ fn slsrpt_line_item_without_qty_reports_validation_errors() {
         });
 
     assert!(
+        results.iter().any(ValidationResult::has_errors),
+        "expected validation errors for missing mandatory QTY segment"
+    );
+
+    assert!(
         missing_qty_issue.is_some(),
         "expected missing mandatory QTY to be reported for the incomplete line item"
     );
