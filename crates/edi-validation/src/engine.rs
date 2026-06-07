@@ -739,6 +739,12 @@ impl ValidationEngine {
             }
         }
 
+        // Check mandatory child segments inside parser-produced segment groups.
+        self.validate_segment_groups_against_schema(&doc.root, schema, result, context);
+        if self.should_stop(result) {
+            return Ok(());
+        }
+
         // Check for mandatory segments
         for segment_def in &schema.segments {
             if segment_def.is_mandatory {
@@ -776,6 +782,86 @@ impl ValidationEngine {
         }
 
         Ok(())
+    }
+
+    fn validate_segment_groups_against_schema(
+        &self,
+        node: &Node,
+        schema: &Schema,
+        result: &mut ValidationResult,
+        context: &ValidationContext,
+    ) {
+        let mut line_item_groups = Vec::new();
+        Self::collect_line_item_groups(node, &mut line_item_groups);
+        if line_item_groups.is_empty() {
+            return;
+        }
+
+        let mandatory_tags = Self::line_item_mandatory_tags(schema);
+
+        for (group_idx, group) in line_item_groups.into_iter().enumerate() {
+            let group_context = context.indexed_child("LINE_ITEM", group_idx);
+            self.validate_line_item_group(group, &mandatory_tags, result, &group_context);
+            if self.should_stop(result) {
+                return;
+            }
+        }
+    }
+
+    fn collect_line_item_groups<'a>(node: &'a Node, groups: &mut Vec<&'a Node>) {
+        if node.node_type == NodeType::SegmentGroup && node.name == "LINE_ITEM" {
+            groups.push(node);
+        }
+
+        for child in &node.children {
+            Self::collect_line_item_groups(child, groups);
+        }
+    }
+
+    fn line_item_mandatory_tags(schema: &Schema) -> Vec<&str> {
+        let mut in_line_item_section = false;
+        let mut tags = Vec::new();
+
+        for segment in &schema.segments {
+            let tag = segment.tag.as_str();
+            if tag == "LIN" {
+                in_line_item_section = true;
+            } else if in_line_item_section && matches!(tag, "UNS" | "CNT" | "UNT") {
+                break;
+            }
+
+            if in_line_item_section && segment.is_mandatory {
+                tags.push(tag);
+            }
+        }
+
+        tags
+    }
+
+    fn validate_line_item_group(
+        &self,
+        group: &Node,
+        mandatory_tags: &[&str],
+        result: &mut ValidationResult,
+        context: &ValidationContext,
+    ) {
+        for tag in mandatory_tags {
+            let found = group.children.iter().any(|child| child.name == *tag);
+            if !found {
+                self.add_error(
+                    result,
+                    context,
+                    "MISSING_MANDATORY_SEGMENT",
+                    format!(
+                        "Mandatory segment '{tag}' is missing from segment group '{}'",
+                        group.name
+                    ),
+                );
+                if self.should_stop(result) {
+                    return;
+                }
+            }
+        }
     }
 
     /// Recursively validate a node
@@ -1060,6 +1146,25 @@ mod tests {
         group.add_child(segment);
         root.add_child(group);
         Document::new(root)
+    }
+
+    fn create_line_item_document_without_qty() -> Document {
+        let mut root = Node::new("ROOT", NodeType::Root);
+        let mut group = Node::new("LINE_ITEM", NodeType::SegmentGroup);
+
+        group.add_child(Node::new("LIN", NodeType::Segment));
+        root.add_child(group);
+
+        Document::new(root)
+    }
+
+    fn create_line_item_schema() -> Schema {
+        Schema::new("LINE_ITEM_TEST", "1.0").with_segments(vec![
+            SegmentDefinition::new("BGM").mandatory(true),
+            SegmentDefinition::new("LIN").mandatory(true),
+            SegmentDefinition::new("QTY").mandatory(true),
+            SegmentDefinition::new("UNT").mandatory(true),
+        ])
     }
 
     fn create_test_segment() -> Node {
@@ -1424,6 +1529,52 @@ mod tests {
         let result = engine.validate_with_schema(&doc, &schema).unwrap();
 
         assert!(result.is_valid, "Expected grouped segment to be validated");
+    }
+
+    #[test]
+    fn test_line_item_group_reports_missing_mandatory_tag_even_when_absent_from_all_groups() {
+        let doc = create_line_item_document_without_qty();
+        let schema = create_line_item_schema();
+        let engine = ValidationEngine::new();
+
+        let result = engine.validate_with_schema(&doc, &schema).unwrap();
+
+        let missing_qty_issue = result.report.all_issues().iter().any(|issue| {
+            issue.code.as_deref() == Some("MISSING_MANDATORY_SEGMENT")
+                && issue.message.contains("QTY")
+        });
+        let spurious_header_or_trailer_issue = result.report.all_issues().iter().any(|issue| {
+            issue.code.as_deref() == Some("MISSING_MANDATORY_SEGMENT")
+                && issue.path == "LINE_ITEM[0]"
+                && (issue.message.contains("BGM") || issue.message.contains("UNT"))
+        });
+
+        assert!(missing_qty_issue, "expected missing QTY to be reported");
+        assert!(
+            !spurious_header_or_trailer_issue,
+            "expected LINE_ITEM validation not to require header or trailer segments"
+        );
+    }
+
+    #[test]
+    fn test_line_item_group_missing_segment_error_includes_group_index_path() {
+        let doc = create_line_item_document_without_qty();
+        let schema = create_line_item_schema();
+        let engine = ValidationEngine::new();
+
+        let result = engine.validate_with_schema(&doc, &schema).unwrap();
+
+        let issue = result
+            .report
+            .all_issues()
+            .iter()
+            .find(|issue| {
+                issue.code.as_deref() == Some("MISSING_MANDATORY_SEGMENT")
+                    && issue.message.contains("QTY")
+            })
+            .expect("expected missing QTY issue");
+
+        assert_eq!(issue.path, "LINE_ITEM[0]");
     }
 
     #[test]

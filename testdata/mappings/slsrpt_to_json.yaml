@@ -1,0 +1,29 @@
+name: slsrpt_to_json
+source_type: EANCOM_SLSRPT
+target_type: JSON_SLSRPT
+
+rules:
+  - type: field
+    source: /BGM/e2
+    target: report_number
+
+  - type: field
+    source: /DTM[c1='137']/e1/c2
+    target: report_date
+
+  - type: foreach
+    source: LINE_ITEM
+    target: lines
+    rules:
+      - type: field
+        source: LIN/e1
+        target: line_number
+      - type: field
+        source: LIN/e3/c1
+        target: item_id
+      - type: field
+        source: QTY[c1='153']/e1/c2
+        target: reported_quantity
+      - type: field
+        source: MOA[c1='203']/e1/c2
+        target: line_amount

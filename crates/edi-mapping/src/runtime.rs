@@ -519,9 +519,15 @@ impl MappingRuntime {
         // the segment qualifier value, but arbitrary numeric keys should fail
         // closed instead of silently matching the first element's qualifier.
         if normalized.chars().all(|ch| ch.is_ascii_digit()) {
-            return Self::is_supported_numeric_qualifier_key(normalized)
-                .then(|| Self::qualifier_component_value(node))
-                .flatten();
+            if Self::is_supported_numeric_qualifier_key(normalized) {
+                return Self::qualifier_component_value(node);
+            }
+            tracing::warn!(
+                selector_key = normalized,
+                node_name = node.name.as_str(),
+                "unrecognized numeric selector key; selector will not match"
+            );
+            return None;
         }
 
         None
@@ -1267,6 +1273,62 @@ rules:
         assert_eq!(
             mapped.value,
             Some(Value::String("SUPPLIER-001".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_numeric_selector_matches_composite_e2_qualifier() {
+        let dsl = r"
+name: selector_composite_e2_test
+source_type: TEST
+target_type: OUTPUT
+rules:
+  - type: field
+    source: /NAD[3035='SU']/e2/c1
+    target: supplier_id
+";
+        let mapping = MappingDsl::parse(dsl).unwrap();
+        let mut root = Node::new("ROOT", NodeType::Root);
+
+        let mut buyer = Node::new("NAD", NodeType::Segment);
+        buyer.add_child(Node::with_value(
+            "e1",
+            NodeType::Element,
+            Value::String("BY".to_string()),
+        ));
+        let mut buyer_e2 = Node::new("e2", NodeType::Element);
+        buyer_e2.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("1234567890123".to_string()),
+        ));
+        buyer.add_child(buyer_e2);
+        root.add_child(buyer);
+
+        let mut supplier = Node::new("NAD", NodeType::Segment);
+        supplier.add_child(Node::with_value(
+            "e1",
+            NodeType::Element,
+            Value::String("SU".to_string()),
+        ));
+        let mut supplier_e2 = Node::new("e2", NodeType::Element);
+        supplier_e2.add_child(Node::with_value(
+            "c1",
+            NodeType::Component,
+            Value::String("9876543210987".to_string()),
+        ));
+        supplier.add_child(supplier_e2);
+        root.add_child(supplier);
+
+        let document = Document::new(root);
+        let mut runtime = MappingRuntime::new();
+        let result = runtime.execute(&mapping, &document).unwrap();
+        let mapped = first_mapped_node(&result);
+
+        assert_eq!(mapped.name, "supplier_id");
+        assert_eq!(
+            mapped.value,
+            Some(Value::String("9876543210987".to_string()))
         );
     }
 

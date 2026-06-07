@@ -509,7 +509,7 @@ impl EdifactParser {
     /// `LINE_ITEM` segment groups. Add new line-item message types to the
     /// `LINE_ITEM_MESSAGE_TYPES` array.
     fn needs_line_item_grouping(message_type: Option<&str>) -> bool {
-        const LINE_ITEM_MESSAGE_TYPES: &[&str] = &["ORDERS", "ORDRSP"];
+        const LINE_ITEM_MESSAGE_TYPES: &[&str] = &["ORDERS", "SLSRPT", "ORDRSP"];
         matches!(message_type, Some(msg_type) if LINE_ITEM_MESSAGE_TYPES.contains(&msg_type))
     }
 
@@ -719,6 +719,72 @@ UNT+7+1'";
 
         assert!(matches!(first_group_first_child, Some(child) if child.name == "LIN"));
         assert!(matches!(second_group_first_child, Some(child) if child.name == "LIN"));
+    }
+
+    #[test]
+    fn test_slsrpt_grouping_with_multiple_lin_loops() {
+        let data = b"UNH+1+SLSRPT:D:96A:UN'\
+BGM+73E+SLSRPT001+9'\
+LIN+1++400****3931:EN'\
+QTY+153:120:PCE'\
+MOA+203:359.88'\
+LIN+2++400****3948:EN'\
+QTY+153:80:PCE'\
+MOA+203:239.92'\
+UNT+9+1'";
+
+        let parser = EdifactParser::new();
+        let docs = parser.parse(data, "test").unwrap();
+
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].metadata.doc_type, Some("SLSRPT".to_string()));
+        let root = &docs[0].root;
+
+        let group_nodes: Vec<&Node> = root
+            .children
+            .iter()
+            .filter(|node| node.node_type == NodeType::SegmentGroup)
+            .collect();
+
+        assert_eq!(group_nodes.len(), 2);
+        assert_eq!(group_nodes[0].name, "LINE_ITEM");
+        assert_eq!(group_nodes[1].name, "LINE_ITEM");
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[0]
+                .children
+                .iter()
+                .any(|child| child.name == "MOA")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "LIN")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "QTY")
+        );
+        assert!(
+            group_nodes[1]
+                .children
+                .iter()
+                .any(|child| child.name == "MOA")
+        );
     }
 
     #[test]
