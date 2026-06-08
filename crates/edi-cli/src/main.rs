@@ -21,7 +21,10 @@ use edi_adapter_edifact::{EdifactParser, EdifactSerializer};
 use edi_ir::Document;
 use edi_ir::NodeType;
 use edi_ir::Value;
-use edi_mapping::{MappingDsl, MappingRuntime};
+use edi_mapping::{
+    MappingDsl, MappingRuntime, MappingTrace, MessageMappingTrace, explain_mapping, lint_mapping,
+    lint_mapping_with_schema,
+};
 use edi_schema::SchemaLoader;
 use edi_validation::{Severity, ValidationEngine, ValidationIssue};
 use serde::Deserialize;
@@ -94,6 +97,13 @@ struct RuntimeOptions {
     color: ColorMode,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TransformCommandOptions {
+    dry_run: bool,
+    trace_mapping: bool,
+    trace_format: TraceFormat,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransformOutputFormat {
     Json,
@@ -138,6 +148,12 @@ impl TransformOutputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum GenerateInputFormat {
     Csv,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TraceFormat {
+    Text,
     Json,
 }
 
@@ -230,6 +246,24 @@ enum Commands {
         /// Schema file path
         #[arg(short, long)]
         schema: Option<String>,
+
+        /// Evaluate mapping and diagnostics without writing transformed output
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+
+        /// Emit rule-by-rule mapping diagnostics
+        #[arg(long, default_value_t = false)]
+        trace_mapping: bool,
+
+        /// Mapping trace output format
+        #[arg(long, value_enum, default_value = "text")]
+        trace_format: TraceFormat,
+    },
+
+    /// Inspect mapping files
+    Mapping {
+        #[command(subcommand)]
+        command: MappingCommands,
     },
 
     /// Validate an EDI file against a schema
@@ -283,6 +317,24 @@ enum ConfigCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum MappingCommands {
+    /// Validate mapping DSL structure and runtime-supported selectors
+    Lint {
+        /// Mapping file path
+        mapping: String,
+
+        /// Optional schema file path for schema-aware path diagnostics
+        #[arg(short, long)]
+        schema: Option<String>,
+    },
+    /// Print a readable mapping rule tree
+    Explain {
+        /// Mapping file path
+        mapping: String,
+    },
+}
+
 fn main() -> ExitCode {
     tracing_subscriber::fmt::init();
 
@@ -321,6 +373,9 @@ fn run() -> anyhow::Result<CliExitCode> {
                 output,
                 mapping,
                 schema,
+                dry_run,
+                trace_mapping,
+                trace_format,
             } => {
                 let profile = resolve_selected_profile(&config, cli.profile.as_deref())?;
                 let runtime = runtime_options(&config, profile);
@@ -335,14 +390,26 @@ fn run() -> anyhow::Result<CliExitCode> {
                 )?;
                 let schema =
                     resolve_optional_profile_value(schema, profile.and_then(|p| p.schema.as_ref()));
+                let options = TransformCommandOptions {
+                    dry_run,
+                    trace_mapping,
+                    trace_format,
+                };
                 transform(
                     &input,
                     output.as_deref(),
                     &mapping,
                     schema.as_deref(),
                     runtime,
+                    options,
                 )
             }
+            Commands::Mapping { command } => match command {
+                MappingCommands::Lint { mapping, schema } => {
+                    mapping_lint(&mapping, schema.as_deref())
+                }
+                MappingCommands::Explain { mapping } => mapping_explain(&mapping),
+            },
             Commands::Validate { input, schema } => {
                 let profile = resolve_selected_profile(&config, cli.profile.as_deref())?;
                 let runtime = runtime_options(&config, profile);
@@ -635,6 +702,42 @@ fn check_profile_path(
     }
 }
 
+fn mapping_lint(mapping_path: &str, schema_path: Option<&str>) -> anyhow::Result<CliExitCode> {
+    let mapping = MappingDsl::parse_file(Path::new(mapping_path))
+        .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
+    let diagnostics = if let Some(schema_path) = schema_path {
+        let schema_loader = SchemaLoader::new(Vec::new());
+        let schema = schema_loader
+            .load_from_file(Path::new(schema_path))
+            .with_context(|| format!("Failed to load schema '{}'", schema_path))?;
+        lint_mapping_with_schema(&mapping, &schema)
+    } else {
+        lint_mapping(&mapping)
+    };
+    if diagnostics.is_empty() {
+        println!("Mapping OK: {mapping_path}");
+        return Ok(CliExitCode::Success);
+    }
+
+    for diagnostic in &diagnostics {
+        println!(
+            "{}: {}: {} ({})",
+            diagnostic.severity.as_str(),
+            diagnostic.rule_path,
+            diagnostic.message,
+            diagnostic.source_path
+        );
+    }
+    Ok(CliExitCode::Warnings)
+}
+
+fn mapping_explain(mapping_path: &str) -> anyhow::Result<CliExitCode> {
+    let mapping = MappingDsl::parse_file(Path::new(mapping_path))
+        .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
+    print!("{}", explain_mapping(&mapping));
+    Ok(CliExitCode::Success)
+}
+
 fn use_color(mode: ColorMode) -> bool {
     match mode {
         ColorMode::Always => true,
@@ -684,6 +787,7 @@ fn transform(
     mapping_path: &str,
     schema_path: Option<&str>,
     runtime: RuntimeOptions,
+    options: TransformCommandOptions,
 ) -> anyhow::Result<CliExitCode> {
     tracing::info!(
         input = %input_path,
@@ -723,18 +827,69 @@ fn transform(
 
     let mut mapping_runtime = MappingRuntime::new();
     let mut mapped_documents = Vec::with_capacity(parsed.documents.len());
+    let mut trace_messages = Vec::new();
 
     for (index, document) in parsed.documents.iter().enumerate() {
-        let mapped = mapping_runtime
-            .execute(&mapping, document)
-            .with_context(|| {
-                format!(
-                    "Failed to apply mapping '{}' to message {}",
-                    mapping_path,
-                    index + 1
-                )
-            })?;
+        let mapped = if options.trace_mapping {
+            let (mapped, rules) = mapping_runtime
+                .execute_with_trace(&mapping, document)
+                .with_context(|| {
+                    format!(
+                        "Failed to apply mapping '{}' to message {}",
+                        mapping_path,
+                        index + 1
+                    )
+                })?;
+            trace_messages.push(MessageMappingTrace {
+                message_index: index + 1,
+                rules,
+            });
+            mapped
+        } else {
+            mapping_runtime
+                .execute(&mapping, document)
+                .with_context(|| {
+                    format!(
+                        "Failed to apply mapping '{}' to message {}",
+                        mapping_path,
+                        index + 1
+                    )
+                })?
+        };
         mapped_documents.push(mapped);
+    }
+
+    if options.trace_mapping {
+        let trace = MappingTrace {
+            mapping: mapping.name.clone(),
+            source_type: mapping.source_type.clone(),
+            target_type: mapping.target_type.clone(),
+            messages: trace_messages,
+        };
+        if options.dry_run || output_path.is_some() {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            write_mapping_trace(&mut handle, &trace, options.trace_format)?;
+        } else {
+            let stderr = std::io::stderr();
+            let mut handle = stderr.lock();
+            write_mapping_trace(&mut handle, &trace, options.trace_format)?;
+        }
+        if options.dry_run {
+            return Ok(if parsed.warnings.is_empty() {
+                CliExitCode::Success
+            } else {
+                CliExitCode::Warnings
+            });
+        }
+    }
+
+    if options.dry_run {
+        return Ok(if parsed.warnings.is_empty() {
+            CliExitCode::Success
+        } else {
+            CliExitCode::Warnings
+        });
     }
 
     emit_progress(runtime, input_path, "serializing transformed output");
@@ -758,6 +913,41 @@ fn transform(
     } else {
         Ok(CliExitCode::Warnings)
     }
+}
+
+fn write_mapping_trace<W: Write>(
+    writer: &mut W,
+    trace: &MappingTrace,
+    format: TraceFormat,
+) -> anyhow::Result<()> {
+    match format {
+        TraceFormat::Json => {
+            serde_json::to_writer_pretty(&mut *writer, trace)
+                .context("Failed to write mapping trace JSON")?;
+            writer
+                .write_all(b"\n")
+                .context("Failed to finalize mapping trace output")?;
+        }
+        TraceFormat::Text => {
+            writeln!(writer, "Mapping trace: {}", trace.mapping)
+                .context("Failed to write mapping trace header")?;
+            for message in &trace.messages {
+                writeln!(writer, "message {}:", message.message_index)
+                    .context("Failed to write mapping trace message")?;
+                for rule in &message.rules {
+                    let source = rule.source.as_deref().unwrap_or("-");
+                    let target = rule.target.as_deref().unwrap_or("-");
+                    writeln!(
+                        writer,
+                        "  {} source={} target={} resolved={}",
+                        rule.rule_type, source, target, rule.resolved_node_count
+                    )
+                    .context("Failed to write mapping trace rule")?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse(
