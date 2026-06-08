@@ -866,7 +866,15 @@ fn transform(
             target_type: mapping.target_type.clone(),
             messages: trace_messages,
         };
-        write_mapping_trace(&trace, options.trace_format)?;
+        if options.dry_run || output_path.is_some() {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            write_mapping_trace(&mut handle, &trace, options.trace_format)?;
+        } else {
+            let stderr = std::io::stderr();
+            let mut handle = stderr.lock();
+            write_mapping_trace(&mut handle, &trace, options.trace_format)?;
+        }
         if options.dry_run {
             return Ok(if parsed.warnings.is_empty() {
                 CliExitCode::Success
@@ -907,28 +915,34 @@ fn transform(
     }
 }
 
-fn write_mapping_trace(trace: &MappingTrace, format: TraceFormat) -> anyhow::Result<()> {
+fn write_mapping_trace<W: Write>(
+    writer: &mut W,
+    trace: &MappingTrace,
+    format: TraceFormat,
+) -> anyhow::Result<()> {
     match format {
         TraceFormat::Json => {
-            let stdout = std::io::stdout();
-            let mut handle = stdout.lock();
-            serde_json::to_writer_pretty(&mut handle, trace)
-                .context("Failed to write mapping trace JSON to stdout")?;
-            handle
+            serde_json::to_writer_pretty(&mut *writer, trace)
+                .context("Failed to write mapping trace JSON")?;
+            writer
                 .write_all(b"\n")
-                .context("Failed to finalize mapping trace output on stdout")?;
+                .context("Failed to finalize mapping trace output")?;
         }
         TraceFormat::Text => {
-            println!("Mapping trace: {}", trace.mapping);
+            writeln!(writer, "Mapping trace: {}", trace.mapping)
+                .context("Failed to write mapping trace header")?;
             for message in &trace.messages {
-                println!("message {}:", message.message_index);
+                writeln!(writer, "message {}:", message.message_index)
+                    .context("Failed to write mapping trace message")?;
                 for rule in &message.rules {
                     let source = rule.source.as_deref().unwrap_or("-");
                     let target = rule.target.as_deref().unwrap_or("-");
-                    println!(
+                    writeln!(
+                        writer,
                         "  {} source={} target={} resolved={}",
                         rule.rule_type, source, target, rule.resolved_node_count
-                    );
+                    )
+                    .context("Failed to write mapping trace rule")?;
                 }
             }
         }

@@ -225,6 +225,7 @@ fn strip_selector(component: &str) -> &str {
 
 fn is_schema_agnostic_path(segment: &str) -> bool {
     segment == "*"
+        || segment == "LINE_ITEM"
         || segment
             .chars()
             .all(|c| c.is_ascii_lowercase() || c == '_' || c == '-')

@@ -129,6 +129,31 @@ rules:
 }
 
 #[test]
+fn mapping_lint_with_schema_accepts_runtime_segment_groups() {
+    let binary = cargo_bin();
+    let mapping = testdata_path("testdata/mappings/orders_to_csv.yaml");
+    let schema = testdata_path("testdata/schemas/eancom_orders_d96a.yaml");
+
+    let output = Command::new(binary)
+        .args([
+            "mapping",
+            "lint",
+            mapping.to_string_lossy().as_ref(),
+            "--schema",
+            schema.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run edi mapping lint with schema");
+
+    assert!(
+        output.status.success(),
+        "expected runtime group paths to lint cleanly; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn mapping_explain_prints_readable_rule_tree() {
     let binary = cargo_bin();
     let mapping = testdata_path("testdata/mappings/orders_to_csv.yaml");
@@ -211,4 +236,42 @@ fn transform_dry_run_trace_mapping_outputs_machine_readable_rule_diagnostics_wit
     );
 
     let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn transform_trace_mapping_keeps_stdout_machine_readable_when_output_is_stdout() {
+    let binary = cargo_bin();
+    let input = testdata_path("testdata/edi/valid_orders_d96a_minimal.edi");
+    let mapping = testdata_path("testdata/mappings/orders_to_json.yaml");
+
+    let output = Command::new(binary)
+        .args([
+            "transform",
+            input.to_string_lossy().as_ref(),
+            "--mapping",
+            mapping.to_string_lossy().as_ref(),
+            "--trace-mapping",
+            "--trace-format",
+            "json",
+        ])
+        .output()
+        .expect("run traced transform to stdout");
+
+    assert!(
+        output.status.success(),
+        "expected transform to succeed; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let transformed: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("stdout should contain only transformed JSON, not trace diagnostics");
+    assert!(
+        transformed.to_string().contains("ORDER123"),
+        "stdout JSON should contain mapped order number: {transformed}"
+    );
+
+    let trace: serde_json::Value = serde_json::from_slice(&output.stderr)
+        .expect("stderr should contain machine-readable JSON trace diagnostics");
+    assert_eq!(trace["mapping"], "orders_to_json");
 }
