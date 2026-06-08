@@ -3,6 +3,7 @@
 //! Provides runtime execution engine for DSL mappings.
 
 use edi_ir::{Document, Node, NodeType, Value};
+use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::dsl::{Condition, LookupDefinition, Mapping, MappingRule, Transform};
@@ -22,6 +23,61 @@ pub struct MappingRuntime {
 
     /// Context stack for nested execution
     context_stack: Vec<MappingContext>,
+
+    /// Rule diagnostics captured during traced execution.
+    trace_events: Option<Vec<MappingTraceEvent>>,
+}
+
+/// Trace for a complete mapping dry run.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MappingTrace {
+    /// Mapping name.
+    pub mapping: String,
+    /// Source document type declared by the mapping.
+    pub source_type: String,
+    /// Target document type declared by the mapping.
+    pub target_type: String,
+    /// Per-message traces.
+    pub messages: Vec<MessageMappingTrace>,
+}
+
+/// Trace for one source message/document.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MessageMappingTrace {
+    /// One-based message index in the input batch.
+    pub message_index: usize,
+    /// Rule diagnostics emitted while mapping the message.
+    pub rules: Vec<MappingTraceEvent>,
+}
+
+/// Diagnostic emitted for a single mapping rule evaluation.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MappingTraceEvent {
+    /// Rule kind: field, foreach, condition, lookup, or block.
+    pub rule_type: String,
+    /// Source path or key path used by the rule.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Target path/name produced by the rule, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Number of nodes/values selected by the rule.
+    pub resolved_node_count: usize,
+    /// Selected input value, when scalar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_value: Option<String>,
+    /// Produced output value, when scalar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_value: Option<String>,
+    /// Whether a condition evaluated true/false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_result: Option<bool>,
+    /// Lookup table name, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lookup_table: Option<String>,
+    /// Whether a lookup found an explicit entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lookup_hit: Option<bool>,
 }
 
 /// Execution context for a mapping
@@ -101,6 +157,7 @@ impl MappingRuntime {
             lookup_tables: HashMap::new(),
             root_node: None,
             context_stack: Vec::new(),
+            trace_events: None,
         }
     }
 
@@ -112,6 +169,7 @@ impl MappingRuntime {
             lookup_tables: HashMap::new(),
             root_node: None,
             context_stack: Vec::new(),
+            trace_events: None,
         }
     }
 
@@ -144,6 +202,36 @@ impl MappingRuntime {
         self.lookup_tables.clear();
         self.root_node = None;
         result
+    }
+
+    /// Execute a mapping and return rule-level diagnostics alongside the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any mapping rule fails during execution.
+    pub fn execute_with_trace(
+        &mut self,
+        mapping: &Mapping,
+        document: &Document,
+    ) -> crate::Result<(Document, Vec<MappingTraceEvent>)> {
+        self.trace_events = Some(Vec::new());
+        let result = self.execute(mapping, document);
+        let trace_events = self.trace_events.take().unwrap_or_default();
+        result.map(|document| (document, trace_events))
+    }
+
+    fn emit_trace(&mut self, event: MappingTraceEvent) {
+        if let Some(events) = &mut self.trace_events {
+            events.push(event);
+        }
+    }
+
+    fn scalar_trace_value(value: &Value) -> Option<String> {
+        value.as_string()
+    }
+
+    fn resolved_scalar_count(value: &Value) -> usize {
+        usize::from(!matches!(value, Value::Null))
     }
 
     /// Execute a single mapping rule
@@ -198,8 +286,20 @@ impl MappingRuntime {
         let transformed_value = if let Some(tfm) = transform {
             apply_transform(&value, tfm)?
         } else {
-            value
+            value.clone()
         };
+
+        self.emit_trace(MappingTraceEvent {
+            rule_type: "field".to_string(),
+            source: Some(source_path.to_string()),
+            target: Some(target_name.to_string()),
+            resolved_node_count: Self::resolved_scalar_count(&value),
+            input_value: Self::scalar_trace_value(&value),
+            output_value: Self::scalar_trace_value(&transformed_value),
+            condition_result: None,
+            lookup_table: None,
+            lookup_hit: None,
+        });
 
         // Create target node
         let target_node = Node::with_value(target_name, NodeType::Field, transformed_value);
@@ -224,6 +324,17 @@ impl MappingRuntime {
     ) -> crate::Result<()> {
         // Find source collection
         let collection = self.find_collection(&context.source_node, source_path)?;
+        self.emit_trace(MappingTraceEvent {
+            rule_type: "foreach".to_string(),
+            source: Some(source_path.to_string()),
+            target: Some(target_name.to_string()),
+            resolved_node_count: collection.len(),
+            input_value: None,
+            output_value: None,
+            condition_result: None,
+            lookup_table: None,
+            lookup_hit: None,
+        });
 
         // Create target container
         let mut container = Node::new(target_name, NodeType::SegmentGroup);
@@ -264,6 +375,17 @@ impl MappingRuntime {
         context: &mut MappingContext,
     ) -> crate::Result<()> {
         let condition_met = self.evaluate_condition(condition, context)?;
+        self.emit_trace(MappingTraceEvent {
+            rule_type: "condition".to_string(),
+            source: None,
+            target: None,
+            resolved_node_count: usize::from(condition_met),
+            input_value: None,
+            output_value: None,
+            condition_result: Some(condition_met),
+            lookup_table: None,
+            lookup_hit: None,
+        });
 
         if condition_met {
             for rule in then_rules {
@@ -298,6 +420,7 @@ impl MappingRuntime {
             .get(table)
             .ok_or_else(|| crate::Error::Runtime(format!("Lookup table '{table}' not found")))?;
 
+        let lookup_hit = lookup_table.entries.contains_key(&key_str);
         let result_value = if let Some(value) = lookup_table.entries.get(&key_str) {
             Value::String(value.clone())
         } else if let Some(default) = default_value {
@@ -307,6 +430,18 @@ impl MappingRuntime {
                 "Lookup key '{key_str}' not found in table '{table}'"
             )));
         };
+
+        self.emit_trace(MappingTraceEvent {
+            rule_type: "lookup".to_string(),
+            source: Some(key_source.to_string()),
+            target: Some(target_name.to_string()),
+            resolved_node_count: Self::resolved_scalar_count(&key),
+            input_value: Some(key_str),
+            output_value: Self::scalar_trace_value(&result_value),
+            condition_result: None,
+            lookup_table: Some(table.to_string()),
+            lookup_hit: Some(lookup_hit),
+        });
 
         // Create target node
         let target_node = Node::with_value(target_name, NodeType::Field, result_value);
