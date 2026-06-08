@@ -11,14 +11,16 @@
 //! This crate provides a declarative mapping DSL for transforming between
 //! different EDI formats and custom schemas.
 
+pub mod diagnostics;
 pub mod dsl;
 pub mod extensions;
 mod numeric;
 pub mod runtime;
 pub mod transforms;
 
+pub use diagnostics::{MappingDiagnostic, explain_mapping, lint_mapping, lint_mapping_with_schema};
 pub use dsl::MappingDsl;
-pub use runtime::MappingRuntime;
+pub use runtime::{MappingRuntime, MappingTrace, MappingTraceEvent, MessageMappingTrace};
 
 use thiserror::Error;
 
