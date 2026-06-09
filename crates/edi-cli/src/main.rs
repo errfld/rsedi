@@ -1779,7 +1779,7 @@ fn render_validation_html_report(report: &ValidationCliReport) -> String {
     }
 
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>rsedi validation report</title></head><body><h1>Validation report</h1><p>Source: {}</p><p>Schema: {}</p><p>Messages: {} Errors: {} Warnings: {}</p><table><thead><tr><th>Severity</th><th>Rule</th><th>Message</th><th>Path</th><th>Details</th></tr></thead><tbody>{}</tbody></table></body></html>",
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>rsedi validation report</title></head><body><h1>Validation report</h1><p>Source: {}</p><p>Schema: {}</p><p>Messages: {} Errors: {} Warnings: {}</p><table><thead><tr><th>Severity</th><th>Rule</th><th>Msg #</th><th>Path</th><th>Details</th></tr></thead><tbody>{}</tbody></table></body></html>",
         escape_html(&report.source),
         escape_html(&report.schema),
         report.summary.messages,

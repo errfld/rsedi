@@ -50,6 +50,28 @@ struct TempFile {
     path: PathBuf,
 }
 
+struct TempPath {
+    path: PathBuf,
+}
+
+impl TempPath {
+    fn new(name: &str, extension: &str) -> Self {
+        Self {
+            path: unique_temp_path(name, extension),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 impl TempFile {
     fn create(name: &str, extension: &str, content: &str) -> Self {
         let path = unique_temp_path(name, extension);
@@ -202,14 +224,20 @@ fn validate_json_report_is_machine_readable_and_includes_actionable_fields() {
     assert_eq!(report["issues"][0]["rule_id"], "MISSING_MANDATORY_SEGMENT");
     assert_eq!(report["issues"][0]["severity"], "error");
     assert_eq!(report["issues"][0]["message_index"], 1);
-    assert!(report["issues"][0]["path"].is_string());
+    let path = report["issues"][0]["path"]
+        .as_str()
+        .expect("path should be string");
+    assert!(
+        !path.is_empty(),
+        "path should be non-empty for actionable diagnostics"
+    );
 }
 
 #[test]
 fn validate_report_output_file_keeps_stdout_concise() {
     let input = testdata_path("testdata/edi/invalid_orders_missing_bgm.edi");
     let schema = testdata_path("testdata/schemas/eancom_orders_d96a.yaml");
-    let report = unique_temp_path("validation-report", "sarif");
+    let report = TempPath::new("validation-report", "sarif");
 
     let output = run_validate_args(
         &input,
@@ -218,7 +246,7 @@ fn validate_report_output_file_keeps_stdout_concise() {
             "--report",
             "sarif",
             "--output",
-            report.to_string_lossy().as_ref(),
+            report.path().to_string_lossy().as_ref(),
         ],
     );
 
@@ -228,7 +256,7 @@ fn validate_report_output_file_keeps_stdout_concise() {
     assert!(stdout.contains("Validation report written to"));
     assert!(!stdout.contains("MISSING_MANDATORY_SEGMENT"));
 
-    let report_body = fs::read_to_string(&report).expect("report file should be written");
+    let report_body = fs::read_to_string(report.path()).expect("report file should be written");
     let sarif: serde_json::Value =
         serde_json::from_str(&report_body).expect("sarif should be JSON");
     assert_eq!(sarif["version"], "2.1.0");
@@ -236,8 +264,19 @@ fn validate_report_output_file_keeps_stdout_concise() {
         sarif["runs"][0]["results"][0]["ruleId"],
         "MISSING_MANDATORY_SEGMENT"
     );
+}
 
-    let _ = fs::remove_file(report);
+#[test]
+fn validate_html_report_labels_message_index_column() {
+    let input = testdata_path("testdata/edi/invalid_orders_missing_bgm.edi");
+    let schema = testdata_path("testdata/schemas/eancom_orders_d96a.yaml");
+    let output = run_validate_args(&input, &schema, &["--report", "html"]);
+
+    assert_exit_code(&output, 2);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("<th>Msg #</th>"));
+    assert!(stdout.contains("<th>Path</th><th>Details</th>"));
 }
 
 #[test]
