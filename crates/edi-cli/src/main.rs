@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -27,7 +28,7 @@ use edi_mapping::{
 };
 use edi_schema::SchemaLoader;
 use edi_validation::{Severity, ValidationEngine, ValidationIssue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliExitCode {
@@ -157,6 +158,14 @@ enum TraceFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ValidationReportFormat {
+    Text,
+    Json,
+    Html,
+    Sarif,
+}
+
 impl GenerateInputFormat {
     fn from_source_type(source_type: &str) -> anyhow::Result<Self> {
         let normalized = source_type.trim().to_ascii_uppercase();
@@ -274,6 +283,14 @@ enum Commands {
         /// Schema file path
         #[arg(short, long)]
         schema: Option<String>,
+
+        /// Validation report format
+        #[arg(long, value_enum, default_value = "text")]
+        report: ValidationReportFormat,
+
+        /// Persist the validation report to this path instead of printing details to stdout
+        #[arg(short, long)]
+        output: Option<String>,
     },
 
     /// Parse an EDI file and output JSON IR
@@ -410,7 +427,12 @@ fn run() -> anyhow::Result<CliExitCode> {
                 }
                 MappingCommands::Explain { mapping } => mapping_explain(&mapping),
             },
-            Commands::Validate { input, schema } => {
+            Commands::Validate {
+                input,
+                schema,
+                report,
+                output,
+            } => {
                 let profile = resolve_selected_profile(&config, cli.profile.as_deref())?;
                 let runtime = runtime_options(&config, profile);
                 let input =
@@ -420,7 +442,7 @@ fn run() -> anyhow::Result<CliExitCode> {
                     profile.and_then(|p| p.schema.as_ref()),
                     "schema",
                 )?;
-                validate(&input, &schema, runtime)
+                validate(&input, &schema, runtime, report, output.as_deref())
             }
             Commands::Parse {
                 input,
@@ -1410,6 +1432,8 @@ fn validate(
     input_path: &str,
     schema_path: &str,
     runtime: RuntimeOptions,
+    report_format: ValidationReportFormat,
+    report_output_path: Option<&str>,
 ) -> anyhow::Result<CliExitCode> {
     tracing::info!(input = %input_path, schema = %schema_path, "Starting validate command");
 
@@ -1440,11 +1464,18 @@ fn validate(
 
     let validator = ValidationEngine::new();
 
+    let snippets = SourceSnippets::from_bytes(&input_bytes);
+    let mut report_issues: Vec<ValidationReportIssue> = Vec::new();
     let mut error_lines: Vec<String> = Vec::new();
     let mut warning_lines: Vec<String> = parsed
         .warnings
         .iter()
-        .map(|warning| format_parse_warning(warning, input_path))
+        .map(|warning| {
+            report_issues.push(ValidationReportIssue::from_parse_warning(
+                input_path, warning,
+            ));
+            format_parse_warning(warning, input_path)
+        })
         .collect();
     let mut info_lines: Vec<String> = Vec::new();
 
@@ -1454,6 +1485,7 @@ fn validate(
     for (index, document) in parsed.documents.iter().enumerate() {
         let message_number = index + 1;
         let normalized_document = normalize_document_for_validation(document);
+        let message_ref = find_message_ref(&normalized_document);
         let result = validator
             .validate_with_schema(&normalized_document, &schema)
             .with_context(|| {
@@ -1464,6 +1496,13 @@ fn validate(
             })?;
 
         for issue in result.report.all_issues() {
+            let report_issue = ValidationReportIssue::from_validation_issue(
+                message_number,
+                message_ref.as_deref(),
+                input_path,
+                issue,
+                &snippets,
+            );
             match issue.severity {
                 Severity::Error => {
                     error_count += 1;
@@ -1479,46 +1518,335 @@ fn validate(
                     info_lines.push(formatted);
                 }
             }
+            report_issues.push(report_issue);
         }
     }
 
-    println!(
-        "Validation summary for '{}' against '{}':",
-        input_path, schema_path
-    );
-    println!("  Messages: {}", parsed.documents.len());
-    println!("  Errors: {}", error_count);
-    println!("  Warnings: {}", warning_count);
+    let report = ValidationCliReport {
+        source: input_path.to_string(),
+        schema: schema_path.to_string(),
+        summary: ValidationReportSummary {
+            messages: parsed.documents.len(),
+            errors: error_count,
+            warnings: warning_count,
+            infos: info_lines.len(),
+        },
+        issues: report_issues,
+    };
 
-    if !error_lines.is_empty() {
-        println!("\nErrors:");
-        for line in &error_lines {
-            println!("  - {}", line);
-        }
-    }
-
-    if !warning_lines.is_empty() {
-        println!("\nWarnings:");
-        for line in &warning_lines {
-            println!("  - {}", line);
-        }
-    }
-
-    if !info_lines.is_empty() {
-        println!("\nInfo:");
-        for line in &info_lines {
-            println!("  - {}", line);
-        }
-    }
+    write_validation_report(
+        &report,
+        report_format,
+        report_output_path,
+        &error_lines,
+        &warning_lines,
+        &info_lines,
+    )?;
 
     if error_count > 0 {
         Ok(CliExitCode::Errors)
     } else if warning_count > 0 {
         Ok(CliExitCode::Warnings)
     } else {
-        println!("\nValidation passed with no warnings.");
+        if report_format == ValidationReportFormat::Text && report_output_path.is_none() {
+            println!("\nValidation passed with no warnings.");
+        }
         Ok(CliExitCode::Success)
     }
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationCliReport {
+    source: String,
+    schema: String,
+    summary: ValidationReportSummary,
+    issues: Vec<ValidationReportIssue>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationReportSummary {
+    messages: usize,
+    errors: usize,
+    warnings: usize,
+    infos: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationReportIssue {
+    severity: &'static str,
+    rule_id: String,
+    message: String,
+    source: String,
+    message_index: Option<usize>,
+    message_ref: Option<String>,
+    path: Option<String>,
+    segment_index: Option<usize>,
+    element_index: Option<usize>,
+    component_index: Option<usize>,
+    line: Option<usize>,
+    column: Option<usize>,
+    snippet: Option<String>,
+    context: Option<String>,
+}
+
+impl ValidationReportIssue {
+    fn from_validation_issue(
+        message_index: usize,
+        message_ref: Option<&str>,
+        source_path: &str,
+        issue: &ValidationIssue,
+        snippets: &SourceSnippets,
+    ) -> Self {
+        Self {
+            severity: severity_name(issue.severity),
+            rule_id: issue.code.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
+            message: issue.message.clone(),
+            source: source_path.to_string(),
+            message_index: Some(message_index),
+            message_ref: message_ref.map(ToOwned::to_owned),
+            path: Some(if issue.path.is_empty() {
+                "$".to_string()
+            } else {
+                issue.path.clone()
+            }),
+            segment_index: issue.segment_pos,
+            element_index: issue.element_pos,
+            component_index: issue.component_pos,
+            line: issue.line,
+            column: issue.column,
+            snippet: issue.segment_pos.and_then(|pos| snippets.segment(pos)),
+            context: issue.context.clone(),
+        }
+    }
+
+    fn from_parse_warning(source_path: &str, warning: &ParseWarning) -> Self {
+        Self {
+            severity: "warning",
+            rule_id: "PARSE_WARNING".to_string(),
+            message: warning.message.clone(),
+            source: source_path.to_string(),
+            message_index: None,
+            message_ref: warning.message_ref.clone(),
+            path: None,
+            segment_index: None,
+            element_index: None,
+            component_index: None,
+            line: Some(warning.position.line),
+            column: Some(warning.position.column),
+            snippet: None,
+            context: None,
+        }
+    }
+}
+
+struct SourceSnippets {
+    segments: Vec<String>,
+}
+
+impl SourceSnippets {
+    fn from_bytes(input: &[u8]) -> Self {
+        let text = String::from_utf8_lossy(input);
+        let segments = text
+            .split('\'')
+            .map(str::trim)
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| format!("{}'", segment.replace(['\r', '\n'], " ")))
+            .collect();
+        Self { segments }
+    }
+
+    fn segment(&self, zero_based_index: usize) -> Option<String> {
+        self.segments.get(zero_based_index).cloned()
+    }
+}
+
+fn severity_name(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+    }
+}
+
+fn write_validation_report(
+    report: &ValidationCliReport,
+    format: ValidationReportFormat,
+    output_path: Option<&str>,
+    error_lines: &[String],
+    warning_lines: &[String],
+    info_lines: &[String],
+) -> anyhow::Result<()> {
+    let rendered =
+        render_validation_report(report, format, error_lines, warning_lines, info_lines)?;
+
+    if let Some(path) = output_path {
+        std::fs::write(path, rendered)
+            .with_context(|| format!("Failed to write validation report '{}'", path))?;
+        println!(
+            "Validation report written to {} (messages={}, errors={}, warnings={})",
+            path, report.summary.messages, report.summary.errors, report.summary.warnings
+        );
+        return Ok(());
+    }
+
+    print!("{rendered}");
+    Ok(())
+}
+
+fn render_validation_report(
+    report: &ValidationCliReport,
+    format: ValidationReportFormat,
+    error_lines: &[String],
+    warning_lines: &[String],
+    info_lines: &[String],
+) -> anyhow::Result<String> {
+    match format {
+        ValidationReportFormat::Text => Ok(render_validation_text_report(
+            report,
+            error_lines,
+            warning_lines,
+            info_lines,
+        )),
+        ValidationReportFormat::Json => {
+            serde_json::to_string_pretty(report).context("Failed to render JSON validation report")
+        }
+        ValidationReportFormat::Html => Ok(render_validation_html_report(report)),
+        ValidationReportFormat::Sarif => {
+            serde_json::to_string_pretty(&validation_report_to_sarif(report))
+                .context("Failed to render SARIF validation report")
+        }
+    }
+    .map(|mut rendered| {
+        rendered.push('\n');
+        rendered
+    })
+}
+
+fn render_validation_text_report(
+    report: &ValidationCliReport,
+    error_lines: &[String],
+    warning_lines: &[String],
+    info_lines: &[String],
+) -> String {
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "Validation summary for '{}' against '{}':",
+        report.source, report.schema
+    );
+    let _ = writeln!(output, "  Messages: {}", report.summary.messages);
+    let _ = writeln!(output, "  Errors: {}", report.summary.errors);
+    let _ = writeln!(output, "  Warnings: {}", report.summary.warnings);
+
+    if !error_lines.is_empty() {
+        output.push_str("\nErrors:\n");
+        for line in error_lines {
+            let _ = writeln!(output, "  - {line}");
+        }
+    }
+
+    if !warning_lines.is_empty() {
+        output.push_str("\nWarnings:\n");
+        for line in warning_lines {
+            let _ = writeln!(output, "  - {line}");
+        }
+    }
+
+    if !info_lines.is_empty() {
+        output.push_str("\nInfo:\n");
+        for line in info_lines {
+            let _ = writeln!(output, "  - {line}");
+        }
+    }
+
+    output
+}
+
+fn render_validation_html_report(report: &ValidationCliReport) -> String {
+    let mut rows = String::new();
+    for issue in &report.issues {
+        let _ = writeln!(
+            rows,
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            escape_html(issue.severity),
+            escape_html(&issue.rule_id),
+            issue
+                .message_index
+                .map_or_else(String::new, |idx| idx.to_string()),
+            escape_html(issue.path.as_deref().unwrap_or("")),
+            escape_html(&issue.message)
+        );
+    }
+
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>rsedi validation report</title></head><body><h1>Validation report</h1><p>Source: {}</p><p>Schema: {}</p><p>Messages: {} Errors: {} Warnings: {}</p><table><thead><tr><th>Severity</th><th>Rule</th><th>Msg #</th><th>Path</th><th>Details</th></tr></thead><tbody>{}</tbody></table></body></html>",
+        escape_html(&report.source),
+        escape_html(&report.schema),
+        report.summary.messages,
+        report.summary.errors,
+        report.summary.warnings,
+        rows
+    )
+}
+
+fn validation_report_to_sarif(report: &ValidationCliReport) -> serde_json::Value {
+    let results: Vec<serde_json::Value> = report
+        .issues
+        .iter()
+        .map(|issue| {
+            let mut location = serde_json::json!({
+                "physicalLocation": {
+                    "artifactLocation": { "uri": issue.source },
+                }
+            });
+            if let Some(line) = issue.line {
+                location["physicalLocation"]["region"] = serde_json::json!({
+                    "startLine": line,
+                    "startColumn": issue.column.unwrap_or(1)
+                });
+            }
+            serde_json::json!({
+                "ruleId": issue.rule_id,
+                "level": issue.severity,
+                "message": { "text": issue.message },
+                "locations": [location],
+                "properties": {
+                    "messageIndex": issue.message_index,
+                    "messageRef": issue.message_ref,
+                    "path": issue.path,
+                    "segmentIndex": issue.segment_index,
+                    "elementIndex": issue.element_index,
+                    "componentIndex": issue.component_index,
+                    "snippet": issue.snippet,
+                    "context": issue.context,
+                }
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "version": "2.1.0",
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "rsedi",
+                    "informationUri": "https://github.com/errfld/rsedi",
+                    "rules": []
+                }
+            },
+            "results": results
+        }]
+    })
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// `normalize_document_for_validation` adapts parser output to the validation engine contract:
@@ -1536,6 +1864,23 @@ fn normalize_document_for_validation<'a>(
     } else {
         Cow::Borrowed(document)
     }
+}
+
+fn find_message_ref(document: &edi_ir::Document) -> Option<String> {
+    find_segment(&document.root, "UNH")
+        .and_then(|unh| unh.children.first())
+        .and_then(|element| element.value.as_ref())
+        .and_then(Value::as_string)
+}
+
+fn find_segment<'a>(node: &'a edi_ir::Node, tag: &str) -> Option<&'a edi_ir::Node> {
+    if node.node_type == NodeType::Segment && node.name == tag {
+        return Some(node);
+    }
+
+    node.children
+        .iter()
+        .find_map(|child| find_segment(child, tag))
 }
 
 fn format_parse_warning(warning: &ParseWarning, source_path: &str) -> String {
