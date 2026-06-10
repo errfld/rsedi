@@ -28,6 +28,7 @@ This directory contains ORDERS mapping examples used as reference templates and 
   - Generic order IR -> summary totals.
   - Demonstrates opt-in aggregate rules over repeated nodes: `sum`, `count`, `min`, `max`, and `distinct`.
   - Copy-pasteable aggregate rule shape:
+
     ```yaml
     - type: aggregate
       source: /lines/line/quantity

@@ -4,7 +4,7 @@
 
 use edi_ir::{Document, Node, NodeType, Value};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::dsl::{AggregateOp, Condition, LookupDefinition, Mapping, MappingRule, Transform};
 use crate::extensions::ExtensionRegistry;
@@ -905,11 +905,10 @@ fn aggregate_extreme(
 
 fn aggregate_number(source_path: &str, op: AggregateOp, value: &Value) -> crate::Result<f64> {
     match value {
-        Value::Integer(i) => i.to_string().parse::<f64>().map_err(|error| {
-            crate::Error::Runtime(format!(
-                "aggregate rule {op:?} at '{source_path}' could not convert integer value '{i}' to number: {error}"
-            ))
-        }),
+        Value::Integer(i) => {
+            #[allow(clippy::cast_precision_loss, reason = "aggregate numeric output is f64-based")]
+            Ok(*i as f64)
+        }
         Value::Decimal(d) => Ok(*d),
         Value::String(s) => s.parse::<f64>().map_err(|error| {
             crate::Error::Runtime(format!(
@@ -930,8 +929,9 @@ fn aggregate_number(source_path: &str, op: AggregateOp, value: &Value) -> crate:
 
 fn distinct_values(values: &[Value]) -> Vec<String> {
     let mut result = Vec::new();
+    let mut seen = HashSet::new();
     for value in values.iter().filter_map(Value::as_string) {
-        if !result.contains(&value) {
+        if seen.insert(value.clone()) {
             result.push(value);
         }
     }
