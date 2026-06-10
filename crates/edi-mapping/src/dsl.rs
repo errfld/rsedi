@@ -63,11 +63,38 @@ pub enum MappingRule {
         default_value: Option<String>,
     },
 
+    /// Aggregate values selected from repeated source nodes.
+    Aggregate {
+        source: String,
+        target: String,
+        op: AggregateOp,
+    },
+
     /// Nested mapping block
     Block {
         #[serde(default)]
         rules: Vec<MappingRule>,
     },
+}
+
+/// Aggregate operation to apply over selected source nodes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregateOp {
+    /// Sum numeric values.
+    Sum,
+    /// Count selected nodes.
+    Count,
+    /// Minimum numeric value.
+    Min,
+    /// Maximum numeric value.
+    Max,
+    /// First selected value.
+    First,
+    /// Last selected value.
+    Last,
+    /// Distinct selected scalar values, preserving first-seen order.
+    Distinct,
 }
 
 /// Condition for conditional mappings

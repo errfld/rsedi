@@ -52,7 +52,9 @@ fn has_rule(rules: &[MappingRule], predicate: &impl Fn(&MappingRule) -> bool) ->
             MappingRule::Condition {
                 then, else_rules, ..
             } => has_rule(then, predicate) || has_rule(else_rules, predicate),
-            MappingRule::Field { .. } | MappingRule::Lookup { .. } => false,
+            MappingRule::Field { .. }
+            | MappingRule::Lookup { .. }
+            | MappingRule::Aggregate { .. } => false,
         };
 
         if nested {
@@ -68,10 +70,12 @@ fn mapping_examples_parse_successfully() {
     let orders_to_csv = parse_mapping_file("orders_to_csv.yaml");
     let orders_to_json = parse_mapping_file("orders_to_json.yaml");
     let csv_to_orders = parse_mapping_file("csv_to_orders.yaml");
+    let advanced_order_totals = parse_mapping_file("advanced_order_totals.yaml");
 
     assert_eq!(orders_to_csv.name, "orders_to_csv");
     assert_eq!(orders_to_json.name, "orders_to_json");
     assert_eq!(csv_to_orders.name, "csv_to_orders");
+    assert_eq!(advanced_order_totals.name, "advanced_order_totals");
 }
 
 #[test]
