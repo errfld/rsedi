@@ -104,6 +104,9 @@ fn lint_rules(rules: &[MappingRule], prefix: &str, diagnostics: &mut Vec<Mapping
             MappingRule::Lookup { key_source, .. } => {
                 lint_path(key_source, &rule_path, diagnostics);
             }
+            MappingRule::Aggregate { source, .. } => {
+                lint_path(source, &rule_path, diagnostics);
+            }
             MappingRule::Block { rules } => {
                 lint_rules(rules, &format!("{rule_path}.rules"), diagnostics);
             }
@@ -120,7 +123,7 @@ fn lint_rules_against_schema(
     for (index, rule) in rules.iter().enumerate() {
         let rule_path = format!("{prefix}[{index}]");
         match rule {
-            MappingRule::Field { source, .. } => {
+            MappingRule::Field { source, .. } | MappingRule::Aggregate { source, .. } => {
                 lint_path_against_schema(source, &rule_path, schema, diagnostics);
             }
             MappingRule::Foreach { source, rules, .. } => {
@@ -419,6 +422,13 @@ fn explain_rules(rules: &[MappingRule], indent: usize, output: &mut String) {
                 }
                 output.push('\n');
             }
+            MappingRule::Aggregate { source, target, op } => {
+                let _ = writeln!(
+                    output,
+                    "{prefix}- aggregate {} {source} -> {target}",
+                    describe_aggregate_op(*op)
+                );
+            }
             MappingRule::Block { rules } => {
                 let _ = writeln!(output, "{prefix}- block");
                 explain_rules(rules, indent + 1, output);
@@ -444,6 +454,18 @@ fn describe_condition(condition: &Condition) -> String {
             .collect::<Vec<_>>()
             .join(" OR "),
         Condition::Not { condition } => format!("NOT ({})", describe_condition(condition)),
+    }
+}
+
+fn describe_aggregate_op(op: crate::dsl::AggregateOp) -> &'static str {
+    match op {
+        crate::dsl::AggregateOp::Sum => "sum",
+        crate::dsl::AggregateOp::Count => "count",
+        crate::dsl::AggregateOp::Min => "min",
+        crate::dsl::AggregateOp::Max => "max",
+        crate::dsl::AggregateOp::First => "first",
+        crate::dsl::AggregateOp::Last => "last",
+        crate::dsl::AggregateOp::Distinct => "distinct",
     }
 }
 

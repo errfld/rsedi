@@ -24,6 +24,17 @@ This directory contains ORDERS mapping examples used as reference templates and 
   - Rebuilds BGM/DTM/NAD/LIN-oriented structures from flat records.
   - Demonstrates reverse direction mapping, constants via defaults, row iteration, and conditional line-level output.
 
+- `advanced_order_totals.yaml`
+  - Generic order IR -> summary totals.
+  - Demonstrates opt-in aggregate rules over repeated nodes: `sum`, `count`, `min`, `max`, and `distinct`.
+  - Copy-pasteable aggregate rule shape:
+    ```yaml
+    - type: aggregate
+      source: /lines/line/quantity
+      target: total_quantity
+      op: sum
+    ```
+
 ## Notes
 
 - Paths intentionally use the jq-like qualifier style agreed for `edi-62b` (for example `NAD[3035='BY']`).

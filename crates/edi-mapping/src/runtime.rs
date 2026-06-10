@@ -6,7 +6,7 @@ use edi_ir::{Document, Node, NodeType, Value};
 use serde::Serialize;
 use std::collections::HashMap;
 
-use crate::dsl::{Condition, LookupDefinition, Mapping, MappingRule, Transform};
+use crate::dsl::{AggregateOp, Condition, LookupDefinition, Mapping, MappingRule, Transform};
 use crate::extensions::ExtensionRegistry;
 use crate::transforms::apply_transform;
 
@@ -262,6 +262,9 @@ impl MappingRuntime {
                 target,
                 default_value,
             } => self.execute_lookup(table, key_source, target, default_value.as_ref(), context),
+            MappingRule::Aggregate { source, target, op } => {
+                self.execute_aggregate(source, target, *op, context)
+            }
             MappingRule::Block { rules } => {
                 for rule in rules {
                     self.execute_rule(rule, context)?;
@@ -361,6 +364,43 @@ impl MappingRuntime {
             parent.add_child(container);
         } else {
             context.target_node = Some(container);
+        }
+
+        Ok(())
+    }
+
+    /// Execute an aggregate mapping over repeated source nodes.
+    fn execute_aggregate(
+        &mut self,
+        source_path: &str,
+        target_name: &str,
+        op: AggregateOp,
+        context: &mut MappingContext,
+    ) -> crate::Result<()> {
+        let selected_nodes = self.find_collection(&context.source_node, source_path)?;
+        let input_values = selected_nodes
+            .iter()
+            .map(|node| node.value.clone().unwrap_or(Value::Null))
+            .collect::<Vec<_>>();
+        let result_value = aggregate_values(source_path, op, &input_values)?;
+
+        self.emit_trace(MappingTraceEvent {
+            rule_type: "aggregate".to_string(),
+            source: Some(source_path.to_string()),
+            target: Some(target_name.to_string()),
+            resolved_node_count: selected_nodes.len(),
+            input_value: Some(format_values(&input_values)),
+            output_value: Self::scalar_trace_value(&result_value),
+            condition_result: None,
+            lookup_table: None,
+            lookup_hit: None,
+        });
+
+        let target_node = Node::with_value(target_name, NodeType::Field, result_value);
+        if let Some(ref mut parent) = context.target_node {
+            parent.add_child(target_node);
+        } else {
+            context.target_node = Some(target_node);
         }
 
         Ok(())
@@ -823,6 +863,87 @@ impl Default for MappingRuntime {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn aggregate_values(source_path: &str, op: AggregateOp, values: &[Value]) -> crate::Result<Value> {
+    match op {
+        AggregateOp::Count => i64::try_from(values.len())
+            .map(Value::Integer)
+            .map_err(|_| crate::Error::Runtime("aggregate count overflowed i64".to_string())),
+        AggregateOp::Sum => values
+            .iter()
+            .try_fold(0.0, |acc, value| {
+                Ok(acc + aggregate_number(source_path, op, value)?)
+            })
+            .map(Value::Decimal),
+        AggregateOp::Min => aggregate_extreme(source_path, op, values, f64::min),
+        AggregateOp::Max => aggregate_extreme(source_path, op, values, f64::max),
+        AggregateOp::First => Ok(values.first().cloned().unwrap_or(Value::Null)),
+        AggregateOp::Last => Ok(values.last().cloned().unwrap_or(Value::Null)),
+        AggregateOp::Distinct => Ok(Value::String(distinct_values(values).join(","))),
+    }
+}
+
+fn aggregate_extreme(
+    source_path: &str,
+    op: AggregateOp,
+    values: &[Value],
+    combine: impl Fn(f64, f64) -> f64,
+) -> crate::Result<Value> {
+    let mut numbers = values
+        .iter()
+        .map(|value| aggregate_number(source_path, op, value));
+    let Some(first) = numbers.next() else {
+        return Ok(Value::Null);
+    };
+    let mut result = first?;
+    for number in numbers {
+        result = combine(result, number?);
+    }
+    Ok(Value::Decimal(result))
+}
+
+fn aggregate_number(source_path: &str, op: AggregateOp, value: &Value) -> crate::Result<f64> {
+    match value {
+        Value::Integer(i) => i.to_string().parse::<f64>().map_err(|error| {
+            crate::Error::Runtime(format!(
+                "aggregate rule {op:?} at '{source_path}' could not convert integer value '{i}' to number: {error}"
+            ))
+        }),
+        Value::Decimal(d) => Ok(*d),
+        Value::String(s) => s.parse::<f64>().map_err(|error| {
+            crate::Error::Runtime(format!(
+                "aggregate rule {op:?} at '{source_path}' expected numeric input but found '{s}': {error}"
+            ))
+        }),
+        Value::Null => Err(crate::Error::Runtime(format!(
+            "aggregate rule {op:?} at '{source_path}' expected numeric input but found null"
+        ))),
+        other => Err(crate::Error::Runtime(format!(
+            "aggregate rule {op:?} at '{source_path}' expected numeric input but found '{}'",
+            other
+                .as_string()
+                .unwrap_or_else(|| "<non-scalar>".to_string())
+        ))),
+    }
+}
+
+fn distinct_values(values: &[Value]) -> Vec<String> {
+    let mut result = Vec::new();
+    for value in values.iter().filter_map(Value::as_string) {
+        if !result.contains(&value) {
+            result.push(value);
+        }
+    }
+    result
+}
+
+fn format_values(values: &[Value]) -> String {
+    values
+        .iter()
+        .map(|value| value.as_string().unwrap_or_else(|| "null".to_string()))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(test)]

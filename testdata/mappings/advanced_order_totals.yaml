@@ -1,0 +1,24 @@
+name: advanced_order_totals
+source_type: order
+target_type: order_summary
+rules:
+  - type: aggregate
+    source: /lines/line/quantity
+    target: total_quantity
+    op: sum
+  - type: aggregate
+    source: /lines/line
+    target: line_count
+    op: count
+  - type: aggregate
+    source: /lines/line/net_amount
+    target: minimum_line_amount
+    op: min
+  - type: aggregate
+    source: /lines/line/net_amount
+    target: maximum_line_amount
+    op: max
+  - type: aggregate
+    source: /lines/line/sku
+    target: distinct_skus
+    op: distinct
