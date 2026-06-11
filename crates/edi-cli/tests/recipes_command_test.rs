@@ -11,15 +11,17 @@ fn cargo_bin() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| repo_root().join("target"));
     let executable_name = format!("edi{}", std::env::consts::EXE_SUFFIX);
-    let fallback = target_dir.join("debug").join(executable_name);
 
-    if fallback.exists() {
-        return fallback;
+    for profile in ["debug", "release"] {
+        let candidate = target_dir.join(profile).join(&executable_name);
+        if candidate.exists() {
+            return candidate;
+        }
     }
 
     panic!(
-        "CARGO_BIN_EXE_edi is not set and fallback binary was not found at {}",
-        fallback.display()
+        "cargo_bin() could not find {executable_name} under {} debug or release directories",
+        target_dir.display()
     );
 }
 

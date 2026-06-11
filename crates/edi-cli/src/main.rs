@@ -1141,7 +1141,7 @@ fn collect_matching_files(
         } else if path
             .extension()
             .and_then(|extension| extension.to_str())
-            .map(|extension| extensions.contains(&extension))
+            .map(|extension| extensions.contains(&extension.to_ascii_lowercase().as_str()))
             .unwrap_or(false)
             && name_contains
                 .map(|needle| file_name.to_ascii_lowercase().contains(needle))
