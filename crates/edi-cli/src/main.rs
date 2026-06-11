@@ -153,6 +153,47 @@ enum GenerateInputFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum RecipeName {
+    ValidateEdifact,
+    OrdersToJson,
+    OrdersToCsv,
+    CsvToOrders,
+    BatchValidateDirectory,
+}
+
+impl RecipeName {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ValidateEdifact => "validate-edifact",
+            Self::OrdersToJson => "orders-to-json",
+            Self::OrdersToCsv => "orders-to-csv",
+            Self::CsvToOrders => "csv-to-orders",
+            Self::BatchValidateDirectory => "batch-validate-directory",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::ValidateEdifact => "Validate an EDIFACT/EANCOM file against a schema",
+            Self::OrdersToJson => "Transform an EANCOM ORDERS file to JSON",
+            Self::OrdersToCsv => "Transform an EANCOM ORDERS file to CSV",
+            Self::CsvToOrders => "Generate EANCOM ORDERS EDI from CSV input",
+            Self::BatchValidateDirectory => "Validate every .edi file in a directory",
+        }
+    }
+
+    fn all() -> &'static [Self] {
+        &[
+            Self::ValidateEdifact,
+            Self::OrdersToJson,
+            Self::OrdersToCsv,
+            Self::CsvToOrders,
+            Self::BatchValidateDirectory,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TraceFormat {
     Text,
     Json,
@@ -238,6 +279,19 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
+    },
+
+    /// Discover and run guided workflow recipes
+    Recipes {
+        #[command(subcommand)]
+        command: RecipeCommands,
+    },
+
+    /// Interactively select a common EDI workflow, or print an auto-detected plan with --dry-run
+    Wizard {
+        /// Print the planned command without prompting or running it
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
     },
 
     /// Transform an EDI file
@@ -335,6 +389,38 @@ enum ConfigCommands {
 }
 
 #[derive(Subcommand)]
+enum RecipeCommands {
+    /// List available guided recipes
+    List,
+    /// Run a guided recipe, or print the command with --dry-run
+    Run {
+        /// Recipe name
+        #[arg(value_enum)]
+        name: RecipeName,
+
+        /// Input file or directory, depending on the recipe
+        #[arg(long)]
+        input: Option<String>,
+
+        /// Output file path for recipes that write one artifact
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Schema file path for validation recipes
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Mapping file path for transform/generate recipes
+        #[arg(long)]
+        mapping: Option<String>,
+
+        /// Print the exact command without running it
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum MappingCommands {
     /// Validate mapping DSL structure and runtime-supported selectors
     Lint {
@@ -385,6 +471,26 @@ fn run() -> anyhow::Result<CliExitCode> {
                     config_check(&config, profile.as_deref().or(cli.profile.as_deref()))
                 }
             },
+            Commands::Recipes { command } => match command {
+                RecipeCommands::List => recipes_list(),
+                RecipeCommands::Run {
+                    name,
+                    input,
+                    output,
+                    schema,
+                    mapping,
+                    dry_run,
+                } => recipes_run(
+                    name,
+                    input.as_deref(),
+                    output.as_deref(),
+                    schema.as_deref(),
+                    mapping.as_deref(),
+                    dry_run,
+                    base_runtime,
+                ),
+            },
+            Commands::Wizard { dry_run } => wizard(dry_run, base_runtime),
             Commands::Transform {
                 input,
                 output,
@@ -758,6 +864,292 @@ fn mapping_explain(mapping_path: &str) -> anyhow::Result<CliExitCode> {
         .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
     print!("{}", explain_mapping(&mapping));
     Ok(CliExitCode::Success)
+}
+
+fn recipes_list() -> anyhow::Result<CliExitCode> {
+    println!("Available recipes:");
+    for recipe in RecipeName::all() {
+        println!("  {:<24} {}", recipe.as_str(), recipe.description());
+    }
+    println!();
+    println!("Run 'edi recipes run <name> --dry-run ...' to print the copyable command.");
+    Ok(CliExitCode::Success)
+}
+
+fn recipes_run(
+    name: RecipeName,
+    input: Option<&str>,
+    output: Option<&str>,
+    schema: Option<&str>,
+    mapping: Option<&str>,
+    dry_run: bool,
+    runtime: RuntimeOptions,
+) -> anyhow::Result<CliExitCode> {
+    let command = recipe_command(name, input, output, schema, mapping)?;
+    if dry_run {
+        print_planned_command(&command);
+        return Ok(CliExitCode::Success);
+    }
+
+    match name {
+        RecipeName::ValidateEdifact => validate(
+            required_recipe_arg(name, "input", input)?,
+            required_recipe_arg(name, "schema", schema)?,
+            runtime,
+            ValidationReportFormat::Text,
+            output,
+        ),
+        RecipeName::OrdersToJson | RecipeName::OrdersToCsv => transform(
+            required_recipe_arg(name, "input", input)?,
+            output,
+            required_recipe_arg(name, "mapping", mapping)?,
+            schema,
+            runtime,
+            TransformCommandOptions {
+                dry_run: false,
+                trace_mapping: false,
+                trace_format: TraceFormat::Text,
+            },
+        ),
+        RecipeName::CsvToOrders => generate(
+            required_recipe_arg(name, "input", input)?,
+            output,
+            required_recipe_arg(name, "mapping", mapping)?,
+            Some(GenerateInputFormat::Csv),
+            runtime,
+        ),
+        RecipeName::BatchValidateDirectory => batch_validate_directory(
+            required_recipe_arg(name, "input", input)?,
+            required_recipe_arg(name, "schema", schema)?,
+            runtime,
+        ),
+    }
+}
+
+fn recipe_command(
+    name: RecipeName,
+    input: Option<&str>,
+    output: Option<&str>,
+    schema: Option<&str>,
+    mapping: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    let mut command = vec!["edi".to_string()];
+    match name {
+        RecipeName::ValidateEdifact => {
+            command.push("validate".to_string());
+            command.push(required_recipe_arg(name, "input", input)?.to_string());
+            command.push("--schema".to_string());
+            command.push(required_recipe_arg(name, "schema", schema)?.to_string());
+            if let Some(output) = output {
+                command.push("--output".to_string());
+                command.push(output.to_string());
+            }
+        }
+        RecipeName::OrdersToJson | RecipeName::OrdersToCsv => {
+            command.push("transform".to_string());
+            command.push(required_recipe_arg(name, "input", input)?.to_string());
+            if let Some(output) = output {
+                command.push(output.to_string());
+            }
+            command.push("--mapping".to_string());
+            command.push(required_recipe_arg(name, "mapping", mapping)?.to_string());
+            if let Some(schema) = schema {
+                command.push("--schema".to_string());
+                command.push(schema.to_string());
+            }
+        }
+        RecipeName::CsvToOrders => {
+            command.push("generate".to_string());
+            command.push(required_recipe_arg(name, "input", input)?.to_string());
+            if let Some(output) = output {
+                command.push(output.to_string());
+            }
+            command.push("--mapping".to_string());
+            command.push(required_recipe_arg(name, "mapping", mapping)?.to_string());
+            command.push("--input-format".to_string());
+            command.push("csv".to_string());
+        }
+        RecipeName::BatchValidateDirectory => {
+            command.push("recipes".to_string());
+            command.push("run".to_string());
+            command.push(name.as_str().to_string());
+            command.push("--input".to_string());
+            command.push(required_recipe_arg(name, "input", input)?.to_string());
+            command.push("--schema".to_string());
+            command.push(required_recipe_arg(name, "schema", schema)?.to_string());
+        }
+    }
+    Ok(command)
+}
+
+fn required_recipe_arg<'a>(
+    recipe: RecipeName,
+    argument_name: &'static str,
+    value: Option<&'a str>,
+) -> anyhow::Result<&'a str> {
+    value.ok_or_else(|| {
+        anyhow!(
+            "Recipe '{}' requires --{}; rerun with --dry-run to preview the exact command once all required paths are provided",
+            recipe.as_str(),
+            argument_name
+        )
+    })
+}
+
+fn print_planned_command(command: &[String]) {
+    println!("Planned command:");
+    println!("{}", shell_join(command));
+}
+
+fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '='))
+    {
+        return arg.to_string();
+    }
+
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+fn batch_validate_directory(
+    input_dir: &str,
+    schema_path: &str,
+    runtime: RuntimeOptions,
+) -> anyhow::Result<CliExitCode> {
+    let mut edi_files = std::fs::read_dir(input_dir)
+        .with_context(|| format!("Failed to read input directory '{}'", input_dir))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("edi"))
+        .collect::<Vec<_>>();
+    edi_files.sort();
+
+    if edi_files.is_empty() {
+        bail!("No .edi files found in '{}'", input_dir);
+    }
+
+    let mut worst = CliExitCode::Success;
+    for path in edi_files {
+        let path = path.to_string_lossy();
+        let code = validate(
+            path.as_ref(),
+            schema_path,
+            runtime,
+            ValidationReportFormat::Text,
+            None,
+        )?;
+        worst = max_exit_code(worst, code);
+    }
+    Ok(worst)
+}
+
+fn max_exit_code(left: CliExitCode, right: CliExitCode) -> CliExitCode {
+    if (left as u8) >= (right as u8) {
+        left
+    } else {
+        right
+    }
+}
+
+fn wizard(dry_run: bool, runtime: RuntimeOptions) -> anyhow::Result<CliExitCode> {
+    if dry_run {
+        let plan = autodetect_wizard_plan()?;
+        print_planned_command(&plan);
+        return Ok(CliExitCode::Success);
+    }
+
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "Non-interactive wizard cannot prompt. Use 'edi recipes list' and 'edi recipes run <name> --dry-run' instead."
+        );
+    }
+
+    let plan = autodetect_wizard_plan()?;
+    print_planned_command(&plan);
+    println!("Run the command above, or use 'edi recipes run' with explicit paths for automation.");
+    let _ = runtime;
+    Ok(CliExitCode::Success)
+}
+
+fn autodetect_wizard_plan() -> anyhow::Result<Vec<String>> {
+    let cwd = env::current_dir().context("Failed to read current directory")?;
+    let input = find_first_matching_file(&cwd, &["edi"], Some("valid_orders_d96a"))
+        .or_else(|| find_first_matching_file(&cwd, &["edi"], Some("orders")))
+        .or_else(|| find_first_matching_file(&cwd, &["edi"], None))
+        .ok_or_else(|| {
+            anyhow!("Wizard could not find an .edi input file in the current workspace")
+        })?;
+    let mapping = find_first_matching_file(&cwd, &["yaml", "yml"], Some("orders_to_json"))
+        .or_else(|| find_first_matching_file(&cwd, &["yaml", "yml"], Some("json")))
+        .ok_or_else(|| {
+            anyhow!("Wizard could not find an orders-to-JSON mapping file in the current workspace")
+        })?;
+
+    recipe_command(
+        RecipeName::OrdersToJson,
+        Some(&input.to_string_lossy()),
+        None,
+        None,
+        Some(&mapping.to_string_lossy()),
+    )
+}
+
+fn find_first_matching_file(
+    root: &Path,
+    extensions: &[&str],
+    name_contains: Option<&str>,
+) -> Option<PathBuf> {
+    let mut matches = Vec::new();
+    collect_matching_files(root, extensions, name_contains, 0, &mut matches);
+    matches.sort();
+    matches.into_iter().next()
+}
+
+fn collect_matching_files(
+    dir: &Path,
+    extensions: &[&str],
+    name_contains: Option<&str>,
+    depth: usize,
+    matches: &mut Vec<PathBuf>,
+) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if path.is_dir() {
+            if matches!(file_name, "target" | ".git") {
+                continue;
+            }
+            collect_matching_files(&path, extensions, name_contains, depth + 1, matches);
+        } else if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extensions.contains(&extension))
+            .unwrap_or(false)
+            && name_contains
+                .map(|needle| file_name.to_ascii_lowercase().contains(needle))
+                .unwrap_or(true)
+        {
+            matches.push(path);
+        }
+    }
 }
 
 fn use_color(mode: ColorMode) -> bool {
