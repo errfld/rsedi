@@ -482,6 +482,7 @@ gh api -X POST repos/<owner>/<repo>/issues/<parent>/sub_issues -f sub_issue_id=<
 --- 
 
 ## Learnings
+- 2026-06-12 (`#124`): CLI auto-schema works best when schema pack IDs are derived deterministically from the first message UNH composite (`message_type`, `release+version`) and validation reports display the selected pack ID rather than an internal schema path. Missing-pack errors should include the exact `edi schema install <pack>` command so non-interactive users can recover without guessing.
 - 2026-06-11 (`#121`): CLI recipe/wizard UX should print exact copyable commands before execution. Non-TTY wizard paths must fail fast with a pointer to `edi recipes run` instead of prompting, while `wizard --dry-run` can auto-detect common testdata-like workspaces safely for CI and scheduled agents.
 - 2026-02-09 (`#55`): CSV-to-IR conversion now validates row/header column counts before zipping values. This prevents silent truncation/misalignment when rows contain missing or extra columns and returns a line-specific validation error instead.
 - 2026-02-09: For `edi-adapter-db`, IR write behavior needed explicit mode semantics (`insert`/`update`/`upsert`) plus batch controls in a single API. Adding `WriteMode` + `WriteOptions` avoided duplicated call-site logic and made transactional chunking deterministic for large payloads.
