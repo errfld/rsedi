@@ -1179,34 +1179,40 @@ fn built_in_schema_source_path(pack: &SchemaPack) -> PathBuf {
 
 fn record_installed_schema_pack(pack_id: &str) -> anyhow::Result<()> {
     let config_path = Path::new("rsedi.yaml");
-    if !config_path.exists() {
-        let config = format!("schema_packs:\n  - {pack_id}\nprofiles: {{}}\n");
-        std::fs::write(config_path, config)
-            .with_context(|| format!("Failed to write '{}'", config_path.display()))?;
-        return Ok(());
+    let mut config = if config_path.exists() {
+        let config_text = std::fs::read_to_string(config_path)
+            .with_context(|| format!("Failed to read '{}'", config_path.display()))?;
+        serde_yaml::from_str::<serde_yaml::Value>(&config_text)
+            .with_context(|| format!("Failed to parse '{}'", config_path.display()))?
+    } else {
+        serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+    };
+
+    let mapping = config.as_mapping_mut().ok_or_else(|| {
+        anyhow!(
+            "Failed to update '{}': root YAML value must be a mapping",
+            config_path.display()
+        )
+    })?;
+    let key = serde_yaml::Value::String("schema_packs".to_string());
+    let packs = mapping
+        .entry(key)
+        .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+    let sequence = packs.as_sequence_mut().ok_or_else(|| {
+        anyhow!(
+            "Failed to update '{}': schema_packs must be a YAML list",
+            config_path.display()
+        )
+    })?;
+
+    let already_recorded = sequence.iter().any(|value| value.as_str() == Some(pack_id));
+    if !already_recorded {
+        sequence.push(serde_yaml::Value::String(pack_id.to_string()));
     }
 
-    let mut config = std::fs::read_to_string(config_path)
-        .with_context(|| format!("Failed to read '{}'", config_path.display()))?;
-    if config.contains(&format!("- {pack_id}")) || config.contains(&format!("\"{pack_id}\"")) {
-        return Ok(());
-    }
-    if config.contains("schema_packs:") {
-        let mut lines = Vec::new();
-        let mut inserted = false;
-        for line in config.lines() {
-            lines.push(line.to_string());
-            if !inserted && line.trim() == "schema_packs:" {
-                lines.push(format!("  - {pack_id}"));
-                inserted = true;
-            }
-        }
-        config = lines.join("\n");
-        config.push('\n');
-    } else {
-        config = format!("schema_packs:\n  - {pack_id}\n{config}");
-    }
-    std::fs::write(config_path, config)
+    let rendered = serde_yaml::to_string(&config)
+        .with_context(|| format!("Failed to render '{}'", config_path.display()))?;
+    std::fs::write(config_path, rendered)
         .with_context(|| format!("Failed to update '{}'", config_path.display()))?;
     Ok(())
 }

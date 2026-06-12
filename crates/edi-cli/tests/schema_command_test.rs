@@ -37,6 +37,8 @@ fn testdata_path(path: &str) -> PathBuf {
     repo_root().join(path)
 }
 
+const UNSUPPORTED_INVRPT_PAYLOAD: &str = "UNH+1+INVRPT:D:96A:UN'BGM+35+REPORT1+9'UNT+3+1'";
+
 fn temp_workspace(name: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -143,8 +145,7 @@ fn validate_auto_schema_detects_orders_pack_without_schema_path() {
 fn validate_auto_schema_reports_install_command_for_missing_pack() {
     let workspace = temp_workspace("missing-pack");
     let input = workspace.join("unsupported.edi");
-    fs::write(&input, "UNH+1+INVRPT:D:96A:UN'BGM+35+REPORT1+9'UNT+3+1'")
-        .expect("write unsupported EDI");
+    fs::write(&input, UNSUPPORTED_INVRPT_PAYLOAD).expect("write unsupported EDI");
 
     let output = Command::new(cargo_bin())
         .current_dir(&workspace)
