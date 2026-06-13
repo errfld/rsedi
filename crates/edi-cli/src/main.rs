@@ -26,7 +26,7 @@ use edi_mapping::{
     MappingDsl, MappingRuntime, MappingTrace, MessageMappingTrace, explain_mapping, lint_mapping,
     lint_mapping_with_schema,
 };
-use edi_schema::SchemaLoader;
+use edi_schema::{Schema, SchemaLoader};
 use edi_validation::{Severity, ValidationEngine, ValidationIssue};
 use serde::{Deserialize, Serialize};
 
@@ -1658,6 +1658,10 @@ fn batch_validate(
     runtime: RuntimeOptions,
 ) -> anyhow::Result<CliExitCode> {
     let files = collect_edi_input_paths(input)?;
+    let schema_loader = SchemaLoader::new(Vec::new());
+    let schema = schema_loader
+        .load_from_file(Path::new(schema_path))
+        .with_context(|| format!("Failed to load schema '{}'", schema_path))?;
     let mut outcomes = Vec::new();
     let mut worst = CliExitCode::Success;
     let mut quarantined = 0usize;
@@ -1669,7 +1673,7 @@ fn batch_validate(
             &source,
             "validating batch file at message boundaries",
         );
-        let result = validate_file_counts(&path, schema_path);
+        let result = validate_file_counts(&path, &schema);
         match result {
             Ok(counts) if counts.errors == 0 => {
                 let status = if counts.warnings > 0 {
@@ -1862,7 +1866,7 @@ struct ValidationCounts {
     warnings: usize,
 }
 
-fn validate_file_counts(path: &Path, schema_path: &str) -> anyhow::Result<ValidationCounts> {
+fn validate_file_counts(path: &Path, schema: &Schema) -> anyhow::Result<ValidationCounts> {
     let input_bytes = std::fs::read(path)
         .with_context(|| format!("Failed to read input file '{}'", path.display()))?;
     let source = path.to_string_lossy();
@@ -1877,10 +1881,6 @@ fn validate_file_counts(path: &Path, schema_path: &str) -> anyhow::Result<Valida
             warnings: parsed.warnings.len(),
         });
     }
-    let schema_loader = SchemaLoader::new(Vec::new());
-    let schema = schema_loader
-        .load_from_file(Path::new(schema_path))
-        .with_context(|| format!("Failed to load schema '{}'", schema_path))?;
     let validator = ValidationEngine::new();
     let mut counts = ValidationCounts {
         messages: parsed.documents.len(),
@@ -1889,7 +1889,7 @@ fn validate_file_counts(path: &Path, schema_path: &str) -> anyhow::Result<Valida
     };
     for document in &parsed.documents {
         let normalized_document = normalize_document_for_validation(document);
-        let result = validator.validate_with_schema(&normalized_document, &schema)?;
+        let result = validator.validate_with_schema(&normalized_document, schema)?;
         for issue in result.report.all_issues() {
             match issue.severity {
                 Severity::Error => counts.errors += 1,
@@ -1988,7 +1988,7 @@ fn write_quarantine_item(
         .unwrap_or("message");
     let mut id = sanitize_quarantine_id(stem);
     let mut counter = 1usize;
-    while dir.join(format!("{id}.json")).exists() {
+    while dir.join(format!("{id}.quarantine.json")).exists() {
         counter += 1;
         id = format!("{}-{counter}", sanitize_quarantine_id(stem));
     }
@@ -2009,7 +2009,7 @@ fn write_quarantine_item(
         payload: payload_name,
         created_unix_seconds,
     };
-    let metadata_path = dir.join(format!("{id}.json"));
+    let metadata_path = dir.join(format!("{id}.quarantine.json"));
     let metadata_bytes = serde_json::to_vec_pretty(&metadata)?;
     std::fs::write(&metadata_path, metadata_bytes).with_context(|| {
         format!(
@@ -2039,11 +2039,27 @@ fn sanitize_quarantine_id(value: &str) -> String {
 }
 
 fn read_quarantine_metadata(dir: &str, id: &str) -> anyhow::Result<QuarantineMetadata> {
-    let path = Path::new(dir).join(format!("{id}.json"));
+    let path = Path::new(dir).join(format!("{id}.quarantine.json"));
     let bytes = std::fs::read(&path)
         .with_context(|| format!("Failed to read quarantine metadata '{}'", path.display()))?;
-    serde_json::from_slice(&bytes)
-        .with_context(|| format!("Failed to parse quarantine metadata '{}'", path.display()))
+    let metadata: QuarantineMetadata = serde_json::from_slice(&bytes)
+        .with_context(|| format!("Failed to parse quarantine metadata '{}'", path.display()))?;
+    validate_quarantine_metadata(&metadata)
+        .with_context(|| format!("Invalid quarantine metadata '{}'", path.display()))?;
+    Ok(metadata)
+}
+
+fn validate_quarantine_metadata(metadata: &QuarantineMetadata) -> anyhow::Result<()> {
+    if metadata.id.trim().is_empty() {
+        bail!("quarantine metadata id is empty");
+    }
+    if metadata.payload.trim().is_empty() {
+        bail!("quarantine metadata payload is empty");
+    }
+    if metadata.category.trim().is_empty() {
+        bail!("quarantine metadata category is empty");
+    }
+    Ok(())
 }
 
 fn read_all_quarantine_metadata(dir: &str) -> anyhow::Result<Vec<QuarantineMetadata>> {
@@ -2052,13 +2068,21 @@ fn read_all_quarantine_metadata(dir: &str) -> anyhow::Result<Vec<QuarantineMetad
         .with_context(|| format!("Failed to read quarantine directory '{}'", dir))?
     {
         let path = entry?.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if file_name.ends_with(".quarantine.json") {
             let bytes = std::fs::read(&path).with_context(|| {
                 format!("Failed to read quarantine metadata '{}'", path.display())
             })?;
-            entries.push(serde_json::from_slice(&bytes).with_context(|| {
-                format!("Failed to parse quarantine metadata '{}'", path.display())
-            })?);
+            let metadata: QuarantineMetadata =
+                serde_json::from_slice(&bytes).with_context(|| {
+                    format!("Failed to parse quarantine metadata '{}'", path.display())
+                })?;
+            validate_quarantine_metadata(&metadata)
+                .with_context(|| format!("Invalid quarantine metadata '{}'", path.display()))?;
+            entries.push(metadata);
         }
     }
     entries.sort_by(|left: &QuarantineMetadata, right| left.id.cmp(&right.id));
@@ -2084,12 +2108,23 @@ fn quarantine_show(dir: &str, id: &str, format: BatchOutputFormat) -> anyhow::Re
         BatchOutputFormat::Json => println!("{}", serde_json::to_string(&metadata)?),
         BatchOutputFormat::Text => {
             let payload_path = Path::new(dir).join(&metadata.payload);
-            let payload = std::fs::read_to_string(&payload_path).unwrap_or_default();
+            let payload_result = std::fs::read_to_string(&payload_path);
             println!("id: {}", metadata.id);
             println!("source: {}", metadata.source);
             println!("category: {}", metadata.category);
             println!("error: {}", metadata.error);
-            println!("snippet: {}", payload.chars().take(240).collect::<String>());
+            match payload_result {
+                Ok(payload) => {
+                    println!("snippet: {}", payload.chars().take(240).collect::<String>());
+                }
+                Err(error) => {
+                    println!(
+                        "snippet_error: failed to read '{}': {error}",
+                        payload_path.display()
+                    );
+                    println!("snippet: ");
+                }
+            }
         }
     }
     Ok(CliExitCode::Success)
