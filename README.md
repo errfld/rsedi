@@ -88,6 +88,24 @@ Generate EDI from CSV/JSON input using a mapping:
 edi generate <input.{csv|json}> <output.edi> -m <mapping.yaml> [--input-format csv|json]
 ```
 
+Process a directory of EDI files without stopping on the first bad file:
+
+```bash
+edi batch validate input/ --schema schemas/eancom_orders_d96a.yaml \
+  --quarantine-dir quarantine/ --format json
+edi batch transform input/ output/ --mapping mappings/orders_to_json.yaml \
+  --quarantine-dir quarantine/
+edi quarantine list quarantine/ --format json
+edi quarantine show quarantine/ <id>
+edi quarantine retry quarantine/ <id> --schema schemas/eancom_orders_d96a.yaml
+edi quarantine export quarantine/ <id> recovered.edi
+```
+
+Batch commands walk `.edi` files recursively and process each file as an independent
+message boundary, so a failed partner file can be quarantined while later files
+continue unless `--strict` is set. JSON summaries include processed, failed,
+warning, output, and quarantined counts for CI use.
+
 Project config workflow:
 
 ```bash

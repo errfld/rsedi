@@ -26,7 +26,7 @@ use edi_mapping::{
     MappingDsl, MappingRuntime, MappingTrace, MessageMappingTrace, explain_mapping, lint_mapping,
     lint_mapping_with_schema,
 };
-use edi_schema::SchemaLoader;
+use edi_schema::{Schema, SchemaLoader};
 use edi_validation::{Severity, ValidationEngine, ValidationIssue};
 use serde::{Deserialize, Serialize};
 
@@ -337,6 +337,18 @@ enum Commands {
         command: MappingCommands,
     },
 
+    /// Process directories of EDI files with streaming-friendly per-file boundaries
+    Batch {
+        #[command(subcommand)]
+        command: BatchCommands,
+    },
+
+    /// Inspect and retry messages captured by batch quarantine
+    Quarantine {
+        #[command(subcommand)]
+        command: QuarantineCommands,
+    },
+
     /// Validate an EDI file against a schema
     Validate {
         /// Input file path (uses profile input when omitted)
@@ -388,6 +400,113 @@ enum Commands {
         #[arg(long, value_enum)]
         input_format: Option<GenerateInputFormat>,
     },
+}
+
+#[derive(Subcommand)]
+enum BatchCommands {
+    /// Validate every .edi file under a directory without stopping at the first bad file
+    Validate {
+        /// Input directory containing .edi files
+        input: String,
+
+        /// Schema file path
+        #[arg(short, long)]
+        schema: String,
+
+        /// Directory where failed files and metadata are captured
+        #[arg(long)]
+        quarantine_dir: Option<String>,
+
+        /// Batch summary format
+        #[arg(long, value_enum, default_value = "text")]
+        format: BatchOutputFormat,
+
+        /// Stop the batch on the first failed file
+        #[arg(long, default_value_t = false)]
+        strict: bool,
+    },
+
+    /// Transform every .edi file under a directory into one output file per input
+    Transform {
+        /// Input directory containing .edi files
+        input: String,
+
+        /// Output directory for transformed files
+        output: String,
+
+        /// Mapping file path
+        #[arg(short, long)]
+        mapping: String,
+
+        /// Directory where failed files and metadata are captured
+        #[arg(long)]
+        quarantine_dir: Option<String>,
+
+        /// Batch summary format
+        #[arg(long, value_enum, default_value = "text")]
+        format: BatchOutputFormat,
+
+        /// Stop the batch on the first failed file
+        #[arg(long, default_value_t = false)]
+        strict: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum QuarantineCommands {
+    /// List quarantined items
+    List {
+        /// Quarantine directory
+        dir: String,
+
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: BatchOutputFormat,
+    },
+
+    /// Show one quarantined item's metadata and payload snippet
+    Show {
+        /// Quarantine directory
+        dir: String,
+
+        /// Quarantine item id
+        id: String,
+
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: BatchOutputFormat,
+    },
+
+    /// Retry validating one quarantined item after configuration/schema fixes
+    Retry {
+        /// Quarantine directory
+        dir: String,
+
+        /// Quarantine item id
+        id: String,
+
+        /// Schema file path
+        #[arg(short, long)]
+        schema: String,
+    },
+
+    /// Export the original quarantined payload
+    Export {
+        /// Quarantine directory
+        dir: String,
+
+        /// Quarantine item id
+        id: String,
+
+        /// Destination file path
+        output: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum BatchOutputFormat {
+    Text,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -568,6 +687,48 @@ fn run() -> anyhow::Result<CliExitCode> {
                     mapping_lint(&mapping, schema.as_deref())
                 }
                 MappingCommands::Explain { mapping } => mapping_explain(&mapping),
+            },
+            Commands::Batch { command } => match command {
+                BatchCommands::Validate {
+                    input,
+                    schema,
+                    quarantine_dir,
+                    format,
+                    strict,
+                } => batch_validate(
+                    &input,
+                    &schema,
+                    quarantine_dir.as_deref(),
+                    format,
+                    strict,
+                    base_runtime,
+                ),
+                BatchCommands::Transform {
+                    input,
+                    output,
+                    mapping,
+                    quarantine_dir,
+                    format,
+                    strict,
+                } => batch_transform(
+                    &input,
+                    &output,
+                    &mapping,
+                    quarantine_dir.as_deref(),
+                    format,
+                    strict,
+                    base_runtime,
+                ),
+            },
+            Commands::Quarantine { command } => match command {
+                QuarantineCommands::List { dir, format } => quarantine_list(&dir, format),
+                QuarantineCommands::Show { dir, id, format } => quarantine_show(&dir, &id, format),
+                QuarantineCommands::Retry { dir, id, schema } => {
+                    quarantine_retry(&dir, &id, &schema, base_runtime)
+                }
+                QuarantineCommands::Export { dir, id, output } => {
+                    quarantine_export(&dir, &id, &output)
+                }
             },
             Commands::Validate {
                 input,
@@ -1446,6 +1607,563 @@ fn max_exit_code(left: CliExitCode, right: CliExitCode) -> CliExitCode {
     } else {
         right
     }
+}
+
+#[derive(Debug, Serialize)]
+struct BatchSummary {
+    command: &'static str,
+    processed: usize,
+    succeeded: usize,
+    warned: usize,
+    failed: usize,
+    quarantined: usize,
+    outputs: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchFileOutcome {
+    source: String,
+    status: &'static str,
+    messages: usize,
+    errors: usize,
+    warnings: usize,
+    output: Option<String>,
+    quarantine_id: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchReport {
+    summary: BatchSummary,
+    files: Vec<BatchFileOutcome>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct QuarantineMetadata {
+    id: String,
+    source: String,
+    category: String,
+    reason: String,
+    error: String,
+    payload: String,
+    created_unix_seconds: u64,
+}
+
+fn batch_validate(
+    input: &str,
+    schema_path: &str,
+    quarantine_dir: Option<&str>,
+    format: BatchOutputFormat,
+    strict: bool,
+    runtime: RuntimeOptions,
+) -> anyhow::Result<CliExitCode> {
+    let files = collect_edi_input_paths(input)?;
+    let schema_loader = SchemaLoader::new(Vec::new());
+    let schema = schema_loader
+        .load_from_file(Path::new(schema_path))
+        .with_context(|| format!("Failed to load schema '{}'", schema_path))?;
+    let mut outcomes = Vec::new();
+    let mut worst = CliExitCode::Success;
+    let mut quarantined = 0usize;
+
+    for path in files {
+        let source = path.to_string_lossy().to_string();
+        emit_progress(
+            runtime,
+            &source,
+            "validating batch file at message boundaries",
+        );
+        let result = validate_file_counts(&path, &schema);
+        match result {
+            Ok(counts) if counts.errors == 0 => {
+                let status = if counts.warnings > 0 {
+                    "warning"
+                } else {
+                    "success"
+                };
+                if counts.warnings > 0 {
+                    worst = max_exit_code(worst, CliExitCode::Warnings);
+                }
+                outcomes.push(BatchFileOutcome {
+                    source,
+                    status,
+                    messages: counts.messages,
+                    errors: counts.errors,
+                    warnings: counts.warnings,
+                    output: None,
+                    quarantine_id: None,
+                    error: None,
+                });
+            }
+            Ok(counts) => {
+                worst = max_exit_code(worst, CliExitCode::Errors);
+                let error = format!("validation failed with {} error(s)", counts.errors);
+                let quarantine_id = quarantine_dir
+                    .map(|dir| write_quarantine_item(dir, &path, "validation", &error))
+                    .transpose()?;
+                quarantined += usize::from(quarantine_id.is_some());
+                outcomes.push(BatchFileOutcome {
+                    source,
+                    status: "failed",
+                    messages: counts.messages,
+                    errors: counts.errors,
+                    warnings: counts.warnings,
+                    output: None,
+                    quarantine_id,
+                    error: Some(error),
+                });
+                if strict {
+                    break;
+                }
+            }
+            Err(error) => {
+                worst = max_exit_code(worst, CliExitCode::Errors);
+                let message = format!("{error:#}");
+                let quarantine_id = quarantine_dir
+                    .map(|dir| write_quarantine_item(dir, &path, "validation", &message))
+                    .transpose()?;
+                quarantined += usize::from(quarantine_id.is_some());
+                outcomes.push(BatchFileOutcome {
+                    source,
+                    status: "failed",
+                    messages: 0,
+                    errors: 1,
+                    warnings: 0,
+                    output: None,
+                    quarantine_id,
+                    error: Some(message),
+                });
+                if strict {
+                    break;
+                }
+            }
+        }
+    }
+
+    let report = build_batch_report("validate", outcomes, quarantined);
+    write_batch_report(&report, format)?;
+    Ok(worst)
+}
+
+fn batch_transform(
+    input: &str,
+    output_dir: &str,
+    mapping_path: &str,
+    quarantine_dir: Option<&str>,
+    format: BatchOutputFormat,
+    strict: bool,
+    runtime: RuntimeOptions,
+) -> anyhow::Result<CliExitCode> {
+    let files = collect_edi_input_paths(input)?;
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("Failed to create output directory '{}'", output_dir))?;
+    let mapping = MappingDsl::parse_file(Path::new(mapping_path))
+        .with_context(|| format!("Failed to parse mapping '{}'", mapping_path))?;
+    let output_format = TransformOutputFormat::from_target_type(&mapping.target_type)
+        .with_context(|| format!("Mapping '{}' has invalid target_type", mapping_path))?;
+    let extension = match output_format {
+        TransformOutputFormat::Json => "json",
+        TransformOutputFormat::Csv => "csv",
+        TransformOutputFormat::Edi => "edi",
+    };
+
+    let mut outcomes = Vec::new();
+    let mut worst = CliExitCode::Success;
+    let mut quarantined = 0usize;
+    for path in files {
+        let source = path.to_string_lossy().to_string();
+        let output_path = Path::new(output_dir).join(format!(
+            "{}.{}",
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("output"),
+            extension
+        ));
+        let result = transform(
+            &source,
+            Some(output_path.to_string_lossy().as_ref()),
+            mapping_path,
+            None,
+            runtime,
+            TransformCommandOptions {
+                dry_run: false,
+                trace_mapping: false,
+                trace_format: TraceFormat::Text,
+            },
+        );
+        match result {
+            Ok(code) if code != CliExitCode::Errors && code != CliExitCode::Fatal => {
+                worst = max_exit_code(worst, code);
+                outcomes.push(BatchFileOutcome {
+                    source,
+                    status: if code == CliExitCode::Warnings {
+                        "warning"
+                    } else {
+                        "success"
+                    },
+                    messages: 0,
+                    errors: 0,
+                    warnings: usize::from(code == CliExitCode::Warnings),
+                    output: Some(output_path.to_string_lossy().to_string()),
+                    quarantine_id: None,
+                    error: None,
+                });
+            }
+            Ok(code) => {
+                worst = max_exit_code(worst, code);
+                let message = "transform failed".to_string();
+                let quarantine_id = quarantine_dir
+                    .map(|dir| write_quarantine_item(dir, &path, "processing", &message))
+                    .transpose()?;
+                quarantined += usize::from(quarantine_id.is_some());
+                outcomes.push(BatchFileOutcome {
+                    source,
+                    status: "failed",
+                    messages: 0,
+                    errors: 1,
+                    warnings: 0,
+                    output: None,
+                    quarantine_id,
+                    error: Some(message),
+                });
+                if strict {
+                    break;
+                }
+            }
+            Err(error) => {
+                worst = max_exit_code(worst, CliExitCode::Errors);
+                let message = format!("{error:#}");
+                let quarantine_id = quarantine_dir
+                    .map(|dir| write_quarantine_item(dir, &path, "processing", &message))
+                    .transpose()?;
+                quarantined += usize::from(quarantine_id.is_some());
+                outcomes.push(BatchFileOutcome {
+                    source,
+                    status: "failed",
+                    messages: 0,
+                    errors: 1,
+                    warnings: 0,
+                    output: None,
+                    quarantine_id,
+                    error: Some(message),
+                });
+                if strict {
+                    break;
+                }
+            }
+        }
+    }
+
+    let report = build_batch_report("transform", outcomes, quarantined);
+    write_batch_report(&report, format)?;
+    Ok(worst)
+}
+
+#[derive(Debug, Default)]
+struct ValidationCounts {
+    messages: usize,
+    errors: usize,
+    warnings: usize,
+}
+
+fn validate_file_counts(path: &Path, schema: &Schema) -> anyhow::Result<ValidationCounts> {
+    let input_bytes = std::fs::read(path)
+        .with_context(|| format!("Failed to read input file '{}'", path.display()))?;
+    let source = path.to_string_lossy();
+    let parser = EdifactParser::new();
+    let parsed = parser
+        .parse_with_warnings(&input_bytes, source.as_ref())
+        .with_context(|| format!("Failed to parse EDIFACT input '{}'", path.display()))?;
+    if parsed.documents.is_empty() {
+        return Ok(ValidationCounts {
+            messages: 0,
+            errors: 1,
+            warnings: parsed.warnings.len(),
+        });
+    }
+    let validator = ValidationEngine::new();
+    let mut counts = ValidationCounts {
+        messages: parsed.documents.len(),
+        errors: 0,
+        warnings: parsed.warnings.len(),
+    };
+    for document in &parsed.documents {
+        let normalized_document = normalize_document_for_validation(document);
+        let result = validator.validate_with_schema(&normalized_document, schema)?;
+        for issue in result.report.all_issues() {
+            match issue.severity {
+                Severity::Error => counts.errors += 1,
+                Severity::Warning => counts.warnings += 1,
+                Severity::Info => {}
+            }
+        }
+    }
+    Ok(counts)
+}
+
+fn build_batch_report(
+    command: &'static str,
+    files: Vec<BatchFileOutcome>,
+    quarantined: usize,
+) -> BatchReport {
+    let summary = BatchSummary {
+        command,
+        processed: files.len(),
+        succeeded: files.iter().filter(|file| file.status == "success").count(),
+        warned: files.iter().filter(|file| file.status == "warning").count(),
+        failed: files.iter().filter(|file| file.status == "failed").count(),
+        quarantined,
+        outputs: files.iter().filter(|file| file.output.is_some()).count(),
+    };
+    BatchReport { summary, files }
+}
+
+fn write_batch_report(report: &BatchReport, format: BatchOutputFormat) -> anyhow::Result<()> {
+    match format {
+        BatchOutputFormat::Json => {
+            println!("{}", serde_json::to_string(report)?);
+        }
+        BatchOutputFormat::Text => {
+            println!(
+                "Batch {} summary: processed={}, succeeded={}, warnings={}, failed={}, quarantined={}, outputs={}",
+                report.summary.command,
+                report.summary.processed,
+                report.summary.succeeded,
+                report.summary.warned,
+                report.summary.failed,
+                report.summary.quarantined,
+                report.summary.outputs
+            );
+            for file in &report.files {
+                println!("{}: {}", file.status, file.source);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_edi_input_paths(input: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let path = Path::new(input);
+    let mut files = Vec::new();
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else if path.is_dir() {
+        collect_edi_files_recursive(path, &mut files)?;
+    } else {
+        bail!("Batch input '{}' is not a file or directory", input);
+    }
+    files.sort();
+    if files.is_empty() {
+        bail!("No .edi files found in '{}'", input);
+    }
+    Ok(files)
+}
+
+fn collect_edi_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("Failed to read input directory '{}'", dir.display()))?
+    {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_edi_files_recursive(&path, files)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("edi") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn write_quarantine_item(
+    quarantine_dir: &str,
+    source_path: &Path,
+    category: &str,
+    reason: &str,
+) -> anyhow::Result<String> {
+    let dir = Path::new(quarantine_dir);
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("Failed to create quarantine directory '{}'", quarantine_dir))?;
+    let stem = source_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("message");
+    let mut id = sanitize_quarantine_id(stem);
+    let mut counter = 1usize;
+    while dir.join(format!("{id}.quarantine.json")).exists() {
+        counter += 1;
+        id = format!("{}-{counter}", sanitize_quarantine_id(stem));
+    }
+    let payload_name = format!("{id}.edi");
+    let payload_path = dir.join(&payload_name);
+    std::fs::copy(source_path, &payload_path)
+        .with_context(|| format!("Failed to copy '{}' into quarantine", source_path.display()))?;
+    let created_unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let metadata = QuarantineMetadata {
+        id: id.clone(),
+        source: source_path.to_string_lossy().to_string(),
+        category: category.to_string(),
+        reason: reason.to_string(),
+        error: reason.to_string(),
+        payload: payload_name,
+        created_unix_seconds,
+    };
+    let metadata_path = dir.join(format!("{id}.quarantine.json"));
+    let metadata_bytes = serde_json::to_vec_pretty(&metadata)?;
+    std::fs::write(&metadata_path, metadata_bytes).with_context(|| {
+        format!(
+            "Failed to write quarantine metadata '{}'",
+            metadata_path.display()
+        )
+    })?;
+    Ok(id)
+}
+
+fn sanitize_quarantine_id(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "message".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn read_quarantine_metadata(dir: &str, id: &str) -> anyhow::Result<QuarantineMetadata> {
+    let path = Path::new(dir).join(format!("{id}.quarantine.json"));
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("Failed to read quarantine metadata '{}'", path.display()))?;
+    let metadata: QuarantineMetadata = serde_json::from_slice(&bytes)
+        .with_context(|| format!("Failed to parse quarantine metadata '{}'", path.display()))?;
+    validate_quarantine_metadata(&metadata)
+        .with_context(|| format!("Invalid quarantine metadata '{}'", path.display()))?;
+    Ok(metadata)
+}
+
+fn validate_quarantine_metadata(metadata: &QuarantineMetadata) -> anyhow::Result<()> {
+    if metadata.id.trim().is_empty() {
+        bail!("quarantine metadata id is empty");
+    }
+    if metadata.payload.trim().is_empty() {
+        bail!("quarantine metadata payload is empty");
+    }
+    if metadata.category.trim().is_empty() {
+        bail!("quarantine metadata category is empty");
+    }
+    Ok(())
+}
+
+fn read_all_quarantine_metadata(dir: &str) -> anyhow::Result<Vec<QuarantineMetadata>> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("Failed to read quarantine directory '{}'", dir))?
+    {
+        let path = entry?.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if file_name.ends_with(".quarantine.json") {
+            let bytes = std::fs::read(&path).with_context(|| {
+                format!("Failed to read quarantine metadata '{}'", path.display())
+            })?;
+            let metadata: QuarantineMetadata =
+                serde_json::from_slice(&bytes).with_context(|| {
+                    format!("Failed to parse quarantine metadata '{}'", path.display())
+                })?;
+            validate_quarantine_metadata(&metadata)
+                .with_context(|| format!("Invalid quarantine metadata '{}'", path.display()))?;
+            entries.push(metadata);
+        }
+    }
+    entries.sort_by(|left: &QuarantineMetadata, right| left.id.cmp(&right.id));
+    Ok(entries)
+}
+
+fn quarantine_list(dir: &str, format: BatchOutputFormat) -> anyhow::Result<CliExitCode> {
+    let entries = read_all_quarantine_metadata(dir)?;
+    match format {
+        BatchOutputFormat::Json => println!("{}", serde_json::to_string(&entries)?),
+        BatchOutputFormat::Text => {
+            for entry in entries {
+                println!("{}\t{}\t{}", entry.id, entry.category, entry.source);
+            }
+        }
+    }
+    Ok(CliExitCode::Success)
+}
+
+fn quarantine_show(dir: &str, id: &str, format: BatchOutputFormat) -> anyhow::Result<CliExitCode> {
+    let metadata = read_quarantine_metadata(dir, id)?;
+    match format {
+        BatchOutputFormat::Json => println!("{}", serde_json::to_string(&metadata)?),
+        BatchOutputFormat::Text => {
+            let payload_path = Path::new(dir).join(&metadata.payload);
+            let payload_result = std::fs::read_to_string(&payload_path);
+            println!("id: {}", metadata.id);
+            println!("source: {}", metadata.source);
+            println!("category: {}", metadata.category);
+            println!("error: {}", metadata.error);
+            match payload_result {
+                Ok(payload) => {
+                    println!("snippet: {}", payload.chars().take(240).collect::<String>());
+                }
+                Err(error) => {
+                    println!(
+                        "snippet_error: failed to read '{}': {error}",
+                        payload_path.display()
+                    );
+                    println!("snippet: ");
+                }
+            }
+        }
+    }
+    Ok(CliExitCode::Success)
+}
+
+fn quarantine_retry(
+    dir: &str,
+    id: &str,
+    schema_path: &str,
+    runtime: RuntimeOptions,
+) -> anyhow::Result<CliExitCode> {
+    let metadata = read_quarantine_metadata(dir, id)?;
+    let payload_path = Path::new(dir).join(&metadata.payload);
+    let code = validate(
+        payload_path.to_string_lossy().as_ref(),
+        schema_path,
+        runtime,
+        ValidationReportFormat::Text,
+        None,
+        None,
+    )?;
+    if code == CliExitCode::Success || code == CliExitCode::Warnings {
+        println!("Quarantine item '{id}' retried successfully.");
+    }
+    Ok(code)
+}
+
+fn quarantine_export(dir: &str, id: &str, output: &str) -> anyhow::Result<CliExitCode> {
+    let metadata = read_quarantine_metadata(dir, id)?;
+    let payload_path = Path::new(dir).join(&metadata.payload);
+    std::fs::copy(&payload_path, output).with_context(|| {
+        format!(
+            "Failed to export quarantine payload '{}' to '{}'",
+            payload_path.display(),
+            output
+        )
+    })?;
+    println!("Exported quarantine item '{id}' to '{output}'.");
+    Ok(CliExitCode::Success)
 }
 
 fn wizard(dry_run: bool, runtime: RuntimeOptions) -> anyhow::Result<CliExitCode> {
