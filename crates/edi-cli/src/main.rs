@@ -6,7 +6,6 @@
 //! EDI transformations and managing configurations.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::env;
 use std::fmt::Write as _;
 use std::fs::File;
@@ -30,6 +29,10 @@ use edi_schema::{Schema, SchemaLoader};
 use edi_validation::{Severity, ValidationEngine, ValidationIssue};
 use serde::{Deserialize, Serialize};
 
+mod config;
+
+use config::{CliConfig, ColorMode, ProfileConfig, load_cli_config};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliExitCode {
     Success = 0,
@@ -42,55 +45,6 @@ impl CliExitCode {
     fn as_exit_code(self) -> ExitCode {
         ExitCode::from(self as u8)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-enum ColorMode {
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct CliConfig {
-    progress: bool,
-    progress_threshold_bytes: u64,
-    color: ColorMode,
-    schema_packs: Vec<String>,
-    profiles: HashMap<String, ProfileConfig>,
-
-    #[serde(skip)]
-    source_path: Option<PathBuf>,
-}
-
-impl Default for CliConfig {
-    fn default() -> Self {
-        Self {
-            progress: true,
-            progress_threshold_bytes: 1024 * 1024,
-            color: ColorMode::Auto,
-            schema_packs: Vec::new(),
-            profiles: HashMap::new(),
-            source_path: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ProfileConfig {
-    input: Option<PathBuf>,
-    output: Option<PathBuf>,
-    schema: Option<PathBuf>,
-    mapping: Option<PathBuf>,
-    quarantine: Option<PathBuf>,
-    output_format: Option<String>,
-    color: Option<ColorMode>,
-    progress: Option<bool>,
-    progress_threshold_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -844,72 +798,6 @@ fn resolve_optional_profile_value(
     profile_value: Option<&PathBuf>,
 ) -> Option<String> {
     explicit.or_else(|| profile_value.map(|path| path.to_string_lossy().into_owned()))
-}
-
-fn load_cli_config(explicit_path: Option<&str>) -> anyhow::Result<CliConfig> {
-    if let Some(path) = explicit_path {
-        let path = PathBuf::from(path);
-        return read_cli_config_file(&path);
-    }
-
-    for path in default_config_paths() {
-        if path.exists() {
-            return read_cli_config_file(&path);
-        }
-    }
-
-    Ok(CliConfig::default())
-}
-
-fn read_cli_config_file(path: &Path) -> anyhow::Result<CliConfig> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("Failed to read CLI config '{}'", path.display()))?;
-    let mut config: CliConfig = serde_yaml::from_slice(&bytes)
-        .with_context(|| format!("Failed to parse CLI config '{}'", path.display()))?;
-    config.source_path = Some(path.to_path_buf());
-    if let Some(base_dir) = path.parent() {
-        for profile in config.profiles.values_mut() {
-            resolve_profile_paths(base_dir, profile);
-        }
-    }
-    Ok(config)
-}
-
-fn resolve_profile_paths(base_dir: &Path, profile: &mut ProfileConfig) {
-    absolutize_profile_path(base_dir, &mut profile.input);
-    absolutize_profile_path(base_dir, &mut profile.output);
-    absolutize_profile_path(base_dir, &mut profile.schema);
-    absolutize_profile_path(base_dir, &mut profile.mapping);
-    absolutize_profile_path(base_dir, &mut profile.quarantine);
-}
-
-fn absolutize_profile_path(base_dir: &Path, value: &mut Option<PathBuf>) {
-    if let Some(path) = value {
-        if path.is_relative() {
-            *path = base_dir.join(&path);
-        }
-    }
-}
-
-fn default_config_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    if let Ok(current_dir) = env::current_dir() {
-        paths.push(current_dir.join("rsedi.yaml"));
-        paths.push(current_dir.join("edi.yaml"));
-        paths.push(current_dir.join("edi-cli.yaml"));
-        paths.push(current_dir.join(".edi-cli.yaml"));
-    }
-
-    if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
-        paths.push(PathBuf::from(config_home).join("edi/cli.yaml"));
-    } else if let Some(appdata) = env::var_os("APPDATA") {
-        paths.push(PathBuf::from(appdata).join("edi/cli.yaml"));
-    } else if let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
-        paths.push(PathBuf::from(home).join(".config/edi/cli.yaml"));
-    }
-
-    paths
 }
 
 fn init_project(profile: &str, force: bool) -> anyhow::Result<CliExitCode> {
