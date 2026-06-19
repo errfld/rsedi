@@ -2,6 +2,24 @@ use serde::Serialize;
 
 use crate::BatchOutputFormat;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FileStatus {
+    Success,
+    Warning,
+    Failed,
+}
+
+impl FileStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Warning => "warning",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct BatchSummary {
     pub(crate) command: &'static str,
@@ -16,7 +34,7 @@ pub(crate) struct BatchSummary {
 #[derive(Debug, Serialize)]
 pub(crate) struct BatchFileOutcome {
     pub(crate) source: String,
-    pub(crate) status: &'static str,
+    pub(crate) status: FileStatus,
     pub(crate) messages: usize,
     pub(crate) errors: usize,
     pub(crate) warnings: usize,
@@ -39,9 +57,18 @@ pub(crate) fn build_batch_report(
     let summary = BatchSummary {
         command,
         processed: files.len(),
-        succeeded: files.iter().filter(|file| file.status == "success").count(),
-        warned: files.iter().filter(|file| file.status == "warning").count(),
-        failed: files.iter().filter(|file| file.status == "failed").count(),
+        succeeded: files
+            .iter()
+            .filter(|file| file.status == FileStatus::Success)
+            .count(),
+        warned: files
+            .iter()
+            .filter(|file| file.status == FileStatus::Warning)
+            .count(),
+        failed: files
+            .iter()
+            .filter(|file| file.status == FileStatus::Failed)
+            .count(),
         quarantined,
         outputs: files.iter().filter(|file| file.output.is_some()).count(),
     };
@@ -68,7 +95,7 @@ pub(crate) fn write_batch_report(
                 report.summary.outputs
             );
             for file in &report.files {
-                println!("{}: {}", file.status, file.source);
+                println!("{}: {}", file.status.as_str(), file.source);
             }
         }
     }
@@ -79,13 +106,13 @@ pub(crate) fn write_batch_report(
 mod tests {
     use super::*;
 
-    fn outcome(status: &'static str, output: Option<&str>) -> BatchFileOutcome {
+    fn outcome(status: FileStatus, output: Option<&str>) -> BatchFileOutcome {
         BatchFileOutcome {
-            source: format!("{status}.edi"),
+            source: format!("{}.edi", status.as_str()),
             status,
             messages: 1,
-            errors: usize::from(status == "failed"),
-            warnings: usize::from(status == "warning"),
+            errors: usize::from(status == FileStatus::Failed),
+            warnings: usize::from(status == FileStatus::Warning),
             output: output.map(str::to_owned),
             quarantine_id: None,
             error: None,
@@ -97,9 +124,9 @@ mod tests {
         let report = build_batch_report(
             "transform",
             vec![
-                outcome("success", Some("success.json")),
-                outcome("warning", Some("warning.json")),
-                outcome("failed", None),
+                outcome(FileStatus::Success, Some("success.json")),
+                outcome(FileStatus::Warning, Some("warning.json")),
+                outcome(FileStatus::Failed, None),
             ],
             1,
         );

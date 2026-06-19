@@ -34,7 +34,7 @@ mod config;
 mod quarantine;
 mod schema_packs;
 
-use batch::{BatchFileOutcome, build_batch_report, write_batch_report};
+use batch::{BatchFileOutcome, FileStatus, build_batch_report, write_batch_report};
 use config::{CliConfig, ColorMode, ProfileConfig, load_cli_config};
 use quarantine::{
     quarantine_export, quarantine_list, quarantine_payload_path, quarantine_show,
@@ -1200,9 +1200,9 @@ fn batch_validate(
         match result {
             Ok(counts) if counts.errors == 0 => {
                 let status = if counts.warnings > 0 {
-                    "warning"
+                    FileStatus::Warning
                 } else {
-                    "success"
+                    FileStatus::Success
                 };
                 if counts.warnings > 0 {
                     worst = max_exit_code(worst, CliExitCode::Warnings);
@@ -1227,7 +1227,7 @@ fn batch_validate(
                 quarantined += usize::from(quarantine_id.is_some());
                 outcomes.push(BatchFileOutcome {
                     source,
-                    status: "failed",
+                    status: FileStatus::Failed,
                     messages: counts.messages,
                     errors: counts.errors,
                     warnings: counts.warnings,
@@ -1248,7 +1248,7 @@ fn batch_validate(
                 quarantined += usize::from(quarantine_id.is_some());
                 outcomes.push(BatchFileOutcome {
                     source,
-                    status: "failed",
+                    status: FileStatus::Failed,
                     messages: 0,
                     errors: 1,
                     warnings: 0,
@@ -1320,9 +1320,9 @@ fn batch_transform(
                 outcomes.push(BatchFileOutcome {
                     source,
                     status: if code == CliExitCode::Warnings {
-                        "warning"
+                        FileStatus::Warning
                     } else {
-                        "success"
+                        FileStatus::Success
                     },
                     messages: 0,
                     errors: 0,
@@ -1341,7 +1341,7 @@ fn batch_transform(
                 quarantined += usize::from(quarantine_id.is_some());
                 outcomes.push(BatchFileOutcome {
                     source,
-                    status: "failed",
+                    status: FileStatus::Failed,
                     messages: 0,
                     errors: 1,
                     warnings: 0,
@@ -1362,7 +1362,7 @@ fn batch_transform(
                 quarantined += usize::from(quarantine_id.is_some());
                 outcomes.push(BatchFileOutcome {
                     source,
-                    status: "failed",
+                    status: FileStatus::Failed,
                     messages: 0,
                     errors: 1,
                     warnings: 0,
