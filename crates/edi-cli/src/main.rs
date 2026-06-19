@@ -29,10 +29,12 @@ use edi_schema::{Schema, SchemaLoader};
 use edi_validation::{Severity, ValidationEngine, ValidationIssue};
 use serde::Serialize;
 
+mod batch;
 mod config;
 mod quarantine;
 mod schema_packs;
 
+use batch::{BatchFileOutcome, FileStatus, build_batch_report, write_batch_report};
 use config::{CliConfig, ColorMode, ProfileConfig, load_cli_config};
 use quarantine::{
     quarantine_export, quarantine_list, quarantine_payload_path, quarantine_show,
@@ -1170,35 +1172,6 @@ fn max_exit_code(left: CliExitCode, right: CliExitCode) -> CliExitCode {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct BatchSummary {
-    command: &'static str,
-    processed: usize,
-    succeeded: usize,
-    warned: usize,
-    failed: usize,
-    quarantined: usize,
-    outputs: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct BatchFileOutcome {
-    source: String,
-    status: &'static str,
-    messages: usize,
-    errors: usize,
-    warnings: usize,
-    output: Option<String>,
-    quarantine_id: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct BatchReport {
-    summary: BatchSummary,
-    files: Vec<BatchFileOutcome>,
-}
-
 fn batch_validate(
     input: &str,
     schema_path: &str,
@@ -1227,9 +1200,9 @@ fn batch_validate(
         match result {
             Ok(counts) if counts.errors == 0 => {
                 let status = if counts.warnings > 0 {
-                    "warning"
+                    FileStatus::Warning
                 } else {
-                    "success"
+                    FileStatus::Success
                 };
                 if counts.warnings > 0 {
                     worst = max_exit_code(worst, CliExitCode::Warnings);
@@ -1254,7 +1227,7 @@ fn batch_validate(
                 quarantined += usize::from(quarantine_id.is_some());
                 outcomes.push(BatchFileOutcome {
                     source,
-                    status: "failed",
+                    status: FileStatus::Failed,
                     messages: counts.messages,
                     errors: counts.errors,
                     warnings: counts.warnings,
@@ -1275,7 +1248,7 @@ fn batch_validate(
                 quarantined += usize::from(quarantine_id.is_some());
                 outcomes.push(BatchFileOutcome {
                     source,
-                    status: "failed",
+                    status: FileStatus::Failed,
                     messages: 0,
                     errors: 1,
                     warnings: 0,
@@ -1347,9 +1320,9 @@ fn batch_transform(
                 outcomes.push(BatchFileOutcome {
                     source,
                     status: if code == CliExitCode::Warnings {
-                        "warning"
+                        FileStatus::Warning
                     } else {
-                        "success"
+                        FileStatus::Success
                     },
                     messages: 0,
                     errors: 0,
@@ -1368,7 +1341,7 @@ fn batch_transform(
                 quarantined += usize::from(quarantine_id.is_some());
                 outcomes.push(BatchFileOutcome {
                     source,
-                    status: "failed",
+                    status: FileStatus::Failed,
                     messages: 0,
                     errors: 1,
                     warnings: 0,
@@ -1389,7 +1362,7 @@ fn batch_transform(
                 quarantined += usize::from(quarantine_id.is_some());
                 outcomes.push(BatchFileOutcome {
                     source,
-                    status: "failed",
+                    status: FileStatus::Failed,
                     messages: 0,
                     errors: 1,
                     warnings: 0,
@@ -1449,47 +1422,6 @@ fn validate_file_counts(path: &Path, schema: &Schema) -> anyhow::Result<Validati
         }
     }
     Ok(counts)
-}
-
-fn build_batch_report(
-    command: &'static str,
-    files: Vec<BatchFileOutcome>,
-    quarantined: usize,
-) -> BatchReport {
-    let summary = BatchSummary {
-        command,
-        processed: files.len(),
-        succeeded: files.iter().filter(|file| file.status == "success").count(),
-        warned: files.iter().filter(|file| file.status == "warning").count(),
-        failed: files.iter().filter(|file| file.status == "failed").count(),
-        quarantined,
-        outputs: files.iter().filter(|file| file.output.is_some()).count(),
-    };
-    BatchReport { summary, files }
-}
-
-fn write_batch_report(report: &BatchReport, format: BatchOutputFormat) -> anyhow::Result<()> {
-    match format {
-        BatchOutputFormat::Json => {
-            println!("{}", serde_json::to_string(report)?);
-        }
-        BatchOutputFormat::Text => {
-            println!(
-                "Batch {} summary: processed={}, succeeded={}, warnings={}, failed={}, quarantined={}, outputs={}",
-                report.summary.command,
-                report.summary.processed,
-                report.summary.succeeded,
-                report.summary.warned,
-                report.summary.failed,
-                report.summary.quarantined,
-                report.summary.outputs
-            );
-            for file in &report.files {
-                println!("{}: {}", file.status, file.source);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn collect_edi_input_paths(input: &str) -> anyhow::Result<Vec<PathBuf>> {
